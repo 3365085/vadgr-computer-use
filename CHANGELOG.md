@@ -12,8 +12,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
   verify exact signed helper adoption offline for standalone clients.
 - Publish retained profile artifacts without rebuilding their validated bytes.
 
+### Changed
+
+- Return dict tool results as compact JSON. MCP clients hand the text to the
+  model unchanged, and the indent=2 layout was about 40% of the tokens of a
+  structured read such as `ui_tree`, `ui_windows` or `browser`.
+- Lead the server instructions with the structured tiers and keep screenshots as
+  the fallback. The previous instructions required a screenshot before and after
+  every click, which contradicted the tier order the tools are built around.
+
 ### Fixed
 
+- Show "button" as the `ui_find` role example. Current toolkits report that name,
+  so a search that followed the old "push button" example matched nothing and
+  the agent fell back to a whole-window `ui_tree`.
 - Preserve Insert in Linux keyboard chords and reject unsupported Wayland keys
   before sending any part of the chord.
 - Read Linux accessibility roles when a toolkit omits the optional role-name

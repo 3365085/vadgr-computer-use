@@ -722,3 +722,49 @@ class TestNativeWindowsImport:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         importlib.import_module("computer_use.mcp_server")
+
+
+class TestCompactWireText:
+    """A dict result reaches the client as compact JSON, not indent=2 text.
+
+    The client hands the text to the model as is, so the indentation was paid in
+    tokens on every structured read. A direct Python call still gets the dict.
+    """
+
+    def test_sync_dict_result_is_compact_on_the_wire(self):
+        from computer_use import mcp_server
+
+        result = asyncio.run(
+            mcp_server.mcp.call_tool("time", {"op": "sleep", "seconds": 0})
+        )
+        assert [c.text for c in result.content] == ['{"slept":0.0}']
+
+    def test_async_dict_result_is_compact_on_the_wire(self):
+        import json
+        import sys
+
+        from computer_use import mcp_server
+
+        result = asyncio.run(mcp_server.mcp.call_tool(
+            "shell",
+            {"op": "run", "command": [sys.executable, "-c", "print(1)"]},
+        ))
+        (text,) = [c.text for c in result.content]
+        assert "\n" not in text
+        assert json.loads(text)["returncode"] == 0
+
+    def test_direct_call_still_returns_the_dict(self):
+        from computer_use import mcp_server
+
+        assert mcp_server.time(op="sleep", seconds=0) == {"slept": 0.0}
+
+
+class TestServerInstructions:
+    def test_structured_tiers_come_before_pixels(self):
+        from computer_use import mcp_server
+
+        text = mcp_server.mcp.instructions
+        assert "ALWAYS take a screenshot" not in text
+        assert text.index("`browser`") < text.index("`ui_find`") < text.index(
+            "take a screenshot"
+        )

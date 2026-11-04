@@ -5,6 +5,7 @@ Run: python -m computer_use.mcp_server [--transport stdio|sse] [--max-width 1366
 
 import argparse
 import functools
+import inspect
 import io
 import logging
 import math
@@ -16,6 +17,7 @@ import time as _time_module
 from importlib.metadata import PackageNotFoundError, version
 
 import anyio
+import pydantic_core
 
 _DEBUG = os.environ.get("VADGR_DEBUG", "") == "1"
 
@@ -80,30 +82,66 @@ from PIL import Image as PILImage
 from computer_use.core import REGISTRY, Risk, Tier, tool
 from computer_use.platform.detect import detect_platform
 
-mcp = MCPServer(
+
+class _CompactMCPServer(MCPServer):
+    """An MCPServer whose dict results reach the client as compact JSON.
+
+    MCPServer serializes a dict result with indent=2, the client hands that text
+    to the model as is, and the indentation is about 40% of the tokens of a
+    ui_tree, ui_windows or browser read. Only a dict result is converted, before
+    the SDK sees it, with the same serializer minus the indent: str, Image and
+    list results keep their own conversion, and a direct Python call of a tool
+    still returns the dict.
+    """
+
+    def tool(self, *args, **kwargs):
+        register = super().tool(*args, **kwargs)
+
+        def decorator(fn):
+            if inspect.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                async def wire(*a, **kw):
+                    return _compact(await fn(*a, **kw))
+            else:
+                @functools.wraps(fn)
+                def wire(*a, **kw):
+                    return _compact(fn(*a, **kw))
+            register(wire)
+            return fn
+
+        return decorator
+
+
+def _compact(result):
+    if isinstance(result, dict):
+        return pydantic_core.to_json(result, fallback=str).decode()
+    return result
+
+
+mcp = _CompactMCPServer(
     name="computer-use",
     instructions=(
-        "Desktop automation engine. Use screenshot() to see the screen, "
-        "then click/type/scroll to interact with UI elements.\n\n"
-        "CRITICAL RULES:\n"
-        "1. ALWAYS take a screenshot BEFORE clicking or typing to verify "
-        "the target is where you expect it to be.\n"
-        "2. ALWAYS take a screenshot AFTER clicking to confirm the action "
-        "had the intended effect (correct window opened, right element selected, etc.).\n"
-        "3. NEVER click based on assumed coordinates from memory -- always "
-        "use the latest screenshot to identify precise coordinates.\n"
-        "4. When clicking on a list item, aim for the CENTER of the item's text, "
-        "not near its edge, to avoid hitting adjacent items.\n"
-        "5. If a click lands on the wrong target, take a screenshot, reassess "
-        "coordinates, and retry.\n"
-        "6. Screenshots are point-in-time. Don't rely on older screenshots from "
-        "earlier turns -- the UI may have changed. Take a fresh one when needed.\n"
-        "7. The `browser` tool (Tier 1, MV3 extension) verifies differently: the "
-        "DOM is the ground truth, so after ANY mutating browser op "
-        "(click/type/fill/select) CONFIRM the effect with a structured read-back "
-        "-- the op's returned `ok`/`checked`, or get_attribute/read_text/query/"
-        "wait_for -- not a screenshot (web state changes too fast to screenshot "
-        "reliably). Never continue on an unverified browser action."
+        "Desktop automation. Prefer the structured tiers: a targeted read is a "
+        "few dozen tokens and an act is confirmed by its own re-read, while a "
+        "full screenshot is 1,500 tokens or more. Pixels are the fallback, not "
+        "the default.\n\n"
+        "1. Web pages: `browser` (DOM selectors). Confirm each mutating op "
+        "with its returned `ok`/`checked` or a read-back (get_value, "
+        "read_text, wait_for), not a screenshot.\n"
+        "2. Native app windows: `ui_find` the control by name and/or role "
+        "(roles read like \"button\", \"toggle button\", \"text box\", "
+        "\"label\"), then `ui_act` on its ref. The act returns the element "
+        "re-read, so it needs no screenshot. Use `ui_tree` only to discover "
+        "what to search for, with a small depth: a whole window can cost "
+        "thousands of tokens. If a ui_* call reports the tier unavailable, or "
+        "a window's tree is empty, go to step 3. On Linux, a Chromium or "
+        "Electron window with an empty tree builds one when it is relaunched "
+        "through `app_open`.\n"
+        "3. Pixels, only when steps 1 and 2 cannot reach the target (canvas, "
+        "games, an empty tree, a visual judgment): take a screenshot, use "
+        "coordinates from the latest screenshot only, and take another only "
+        "when the result cannot be read back. format=\"thumbnail\" is enough "
+        "for a sanity check."
     ),
 )
 
@@ -967,7 +1005,7 @@ def ui_find(role: str = "", name: str = "", app: str = "") -> dict:
 
     Each result carries an opaque ``ref`` for ui_act, plus ``bounds`` and
     ``states``. An empty match is a successful read (``ok`` with an empty list),
-    not an error. Match by role (e.g. "push button"), by name, or both. ``app=""``
+    not an error. Match by role (e.g. "button"), by name, or both. ``app=""``
     searches the focused window; ``app="Name"`` searches that application's window
     even when unfocused; ``app="*"`` searches every open window.
     """
