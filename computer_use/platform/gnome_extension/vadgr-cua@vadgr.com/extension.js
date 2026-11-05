@@ -237,15 +237,15 @@ class Indicator {
         if (text !== null)
             this._setText(text);
         if (!this._root.visible) {
-            this._root.opacity = 0;
             this._root.show();
             this._breathe();
         }
-        this._root.ease({
-            opacity: 255,
-            duration: FADE_MS,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-        });
+        // At full opacity at once, not faded in: the ring and the target box
+        // live inside the root and last about as long as a fade, so the first
+        // action after an idle spell drew them nearly invisible. This also
+        // cancels a fade-out in progress.
+        this._root.remove_all_transitions();
+        this._root.opacity = 255;
         this._restartIdle(IDLE_FADE_MS);
     }
 

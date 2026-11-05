@@ -315,10 +315,24 @@ class TestSelection:
         monkeypatch.setattr(linux, "_is_wayland", lambda: True)
         monkeypatch.setattr(gnome_shell, "session_is_gnome", lambda: True)
         monkeypatch.setattr(gnome_shell, "extension_available", lambda: False)
+        monkeypatch.setattr(gnome_shell, "extension_installed", lambda: False)
         monkeypatch.setattr(linux, "portal_available", lambda: True)
         monkeypatch.setattr(shutil, "which", lambda name: None)
         capture = linux._create_screen_capture()
         assert capture.backend_name == "portal"
+
+    def test_an_installed_extension_is_chosen_even_while_it_is_away(self, monkeypatch):
+        # A server started while the screen was locked, or before the shell
+        # loaded the extension, must not stay on the flashing portal for good:
+        # the capture falls back per call and returns to the extension.
+        from computer_use.platform import linux
+
+        monkeypatch.setattr(linux, "_is_wayland", lambda: True)
+        monkeypatch.setattr(gnome_shell, "session_is_gnome", lambda: True)
+        monkeypatch.setattr(gnome_shell, "extension_available", lambda: False)
+        monkeypatch.setattr(gnome_shell, "extension_installed", lambda: True)
+        monkeypatch.setattr(linux, "portal_available", lambda: True)
+        assert isinstance(linux._create_screen_capture(), GnomeShellScreenCapture)
 
     def test_another_desktop_is_never_probed(self, monkeypatch):
         from computer_use.platform import linux

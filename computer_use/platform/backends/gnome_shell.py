@@ -92,6 +92,18 @@ def extension_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "gnome_extension" / EXTENSION_UUID
 
 
+def user_extension_dir() -> Path:
+    """Where ``install-deps`` installs the extension for this user."""
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share"
+    )
+    return Path(data_home) / "gnome-shell" / "extensions" / EXTENSION_UUID
+
+
+def extension_installed() -> bool:
+    return (user_extension_dir() / "metadata.json").is_file()
+
+
 def session_is_gnome() -> bool:
     return "gnome" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
 

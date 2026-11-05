@@ -107,9 +107,12 @@ def _cap_gnome_shell(ctx):
 
 
 def _gnome_shell_available() -> bool:
-    from computer_use.platform.backends.gnome_shell import extension_available
+    from computer_use.platform.backends.gnome_shell import (
+        extension_available,
+        extension_installed,
+    )
 
-    return extension_available()
+    return extension_installed() or extension_available()
 
 
 CAPTURE_PROVIDERS = [

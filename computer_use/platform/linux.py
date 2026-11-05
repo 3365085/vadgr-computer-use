@@ -310,8 +310,16 @@ _WAYLAND_TOOLS: list[tuple[str, type[_CliScreenCapture]]] = [
 
 
 def _gnome_shell_capture_available() -> bool:
-    """The vadgr GNOME Shell extension answers on this GNOME session's bus."""
-    return gnome_shell.session_is_gnome() and gnome_shell.extension_available()
+    """The vadgr GNOME Shell extension is installed here, or answers on the bus.
+
+    Installed is enough: the capture falls back to the portal per call while the
+    extension is away (screen locked, shell still starting), and comes back to it
+    without a restart. Choosing by a live answer alone pinned a server started at
+    such a moment to the flashing portal for its whole life.
+    """
+    return gnome_shell.session_is_gnome() and (
+        gnome_shell.extension_installed() or gnome_shell.extension_available()
+    )
 
 
 def _create_screen_capture() -> ScreenCapture:

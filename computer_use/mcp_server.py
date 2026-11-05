@@ -110,6 +110,13 @@ class _CompactMCPServer(MCPServer):
             keeps_dict = _validates_an_object(fn, kwargs.get("structured_output"))
             cued = name in _indicator.INDICATED_TOOLS
             signature = inspect.signature(fn)
+            # The SDK wraps a str result as {"result": str}, so the stop goes out
+            # as text there: a JSON string inside it reached the model escaped.
+            stop_as_text = signature.return_annotation in (str, "str")
+
+            def stopped():
+                stop = _indicator.stopped_result()
+                return f"{stop['error']}: {stop['message']}" if stop_as_text else deliver(stop)
 
             def deliver(result):
                 if cued:
@@ -122,20 +129,20 @@ class _CompactMCPServer(MCPServer):
                     if cued and await anyio.to_thread.run_sync(
                         _cue, name, signature, a, kw
                     ):
-                        return deliver(_indicator.stopped_result())
+                        return stopped()
                     try:
                         return deliver(await fn(*a, **kw))
                     except UserStopped:
-                        return deliver(_indicator.stopped_result())
+                        return stopped()
             else:
                 @functools.wraps(fn)
                 def wire(*a, **kw):
                     if cued and _cue(name, signature, a, kw):
-                        return deliver(_indicator.stopped_result())
+                        return stopped()
                     try:
                         return deliver(fn(*a, **kw))
                     except UserStopped:
-                        return deliver(_indicator.stopped_result())
+                        return stopped()
             register(wire)
             return fn
 

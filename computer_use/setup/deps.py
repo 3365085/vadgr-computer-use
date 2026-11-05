@@ -187,16 +187,9 @@ def _gnome_session_as_root() -> bool:
     )
 
 
-def _user_extension_dir() -> Path:
-    data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    return Path(data_home) / "gnome-shell" / "extensions" / gnome_shell.EXTENSION_UUID
-
-
 def _extension_installed() -> bool:
     """Whether this user's copy matches the packaged extension byte for byte."""
-    source, target = gnome_shell.extension_dir(), _user_extension_dir()
+    source, target = gnome_shell.extension_dir(), gnome_shell.user_extension_dir()
     try:
         return all(
             (target / name).read_bytes() == (source / name).read_bytes()
