@@ -176,6 +176,8 @@ class PortalScreenshotClient:
 class PortalScreenshotCapture(ScreenCapture):
     """Capture via the XDG Screenshot portal; decode + crop + clean up locally."""
 
+    backend_name = "portal"
+
     def __init__(self, client: PortalScreenshotClient | None = None):
         self._client = client or PortalScreenshotClient()
 

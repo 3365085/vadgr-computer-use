@@ -21,16 +21,28 @@ for the uinput fallback. ``pip`` cannot install those (and must not shell out to
 a package manager during install), so this module diagnoses what's missing and
 emits an explicit, distro-aware plan, à la ``playwright install-deps``: printed
 by default, executed only with ``--yes``.
+
+On GNOME it also installs the vadgr GNOME Shell extension (the on-screen
+indicator, Esc to stop, and screenshots without the flash). That one is a
+per-user install, so it runs unprivileged after the root steps, and it needs
+one log out and back in: GNOME Shell on Wayland loads a new extension only at
+login.
 """
 
 from __future__ import annotations
 
+import ast
 import getpass
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
+
+from computer_use.platform.backends import gnome_shell
 
 # package-manager -> (detect binary, install-command tokens WITHOUT escalation).
 # The privilege escalation (pkexec / sudo) is chosen separately and prepended at
@@ -68,6 +80,14 @@ _PACKAGES = {
 }
 
 _UDEV_RULE = Path(__file__).resolve().parent / "udev" / "99-vadgr-uinput.rules"
+
+# The GNOME Shell extension: logical dep name, and what the plan prints.
+GNOME_EXTENSION = "gnome-shell-extension"
+_EXTENSION_BUNDLE = f"{gnome_shell.EXTENSION_UUID}.shell-extension.zip"
+RELOGIN_NOTE = (
+    "Log out and back in once: GNOME Shell on Wayland loads a new extension "
+    "only at login."
+)
 
 
 def detect_package_manager() -> str | None:
@@ -126,11 +146,192 @@ def diagnose() -> dict:
             "reason": "no gio or gtk-launch on PATH (app_open cannot launch apps)",
             "fix": "install the glib launcher tools",
         })
-    return {"package_manager": detect_package_manager(), "missing": missing}
+    notes: list[str] = []
+    extension = gnome_extension_status()
+    if extension is not None:
+        if not extension["installed"] or not extension["enabled"]:
+            state = "not installed or out of date" if not extension["installed"] else "not enabled"
+            missing.append({
+                "name": GNOME_EXTENSION,
+                "reason": (
+                    f"the vadgr GNOME Shell extension is {state} (no on-screen "
+                    "indicator or Esc to stop, and every screenshot flashes)"
+                ),
+                "fix": "install and enable it for this user, then log out and back in",
+            })
+        elif not extension["running"]:
+            notes.append(
+                "The vadgr GNOME Shell extension is installed and enabled but not "
+                f"running yet. {RELOGIN_NOTE}"
+            )
+    elif _gnome_session_as_root():
+        notes.append(
+            "Run install-deps as your desktop user, not as root, to install the "
+            "vadgr GNOME Shell extension."
+        )
+    return {"package_manager": detect_package_manager(), "missing": missing, "notes": notes}
 
 
 def _launcher_present() -> bool:
     return any(shutil.which(t) for t in ("gio", "gtk-launch"))
+
+
+# -- the GNOME Shell extension: per user, unprivileged -------------------------
+
+
+def _gnome_session_as_root() -> bool:
+    return (
+        sys.platform.startswith("linux")
+        and gnome_shell.session_is_gnome()
+        and os.geteuid() == 0
+    )
+
+
+def _user_extension_dir() -> Path:
+    data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share"
+    )
+    return Path(data_home) / "gnome-shell" / "extensions" / gnome_shell.EXTENSION_UUID
+
+
+def _extension_installed() -> bool:
+    """Whether this user's copy matches the packaged extension byte for byte."""
+    source, target = gnome_shell.extension_dir(), _user_extension_dir()
+    try:
+        return all(
+            (target / name).read_bytes() == (source / name).read_bytes()
+            for name in gnome_shell.EXTENSION_FILES
+        )
+    except OSError:
+        return False
+
+
+def _gsettings_get(key: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["gsettings", "get", "org.gnome.shell", key],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _gsettings_strv(key: str) -> list[str] | None:
+    """An org.gnome.shell string-list setting, or None when it cannot be read."""
+    text = _gsettings_get(key)
+    if text is None:
+        return None
+    if text.startswith("@as"):  # how gsettings prints an empty list
+        text = text[3:].strip()
+    try:
+        value = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        return None
+    return value
+
+
+def _gsettings_set_strv(key: str, values: list[str]) -> bool:
+    text = "[" + ", ".join(json.dumps(v) for v in values) + "]"
+    try:
+        out = subprocess.run(
+            ["gsettings", "set", "org.gnome.shell", key, text],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
+def _extension_enabled() -> bool:
+    uuid = gnome_shell.EXTENSION_UUID
+    enabled = _gsettings_strv("enabled-extensions")
+    disabled = _gsettings_strv("disabled-extensions") or []
+    return enabled is not None and uuid in enabled and uuid not in disabled
+
+
+def gnome_extension_status() -> dict | None:
+    """Where the vadgr GNOME Shell extension stands, or None where it does not apply.
+
+    It applies to a Linux GNOME session that has the ``gnome-extensions`` tool,
+    run as the desktop user: root's extensions are not the desktop's.
+    """
+    if not sys.platform.startswith("linux") or not gnome_shell.session_is_gnome():
+        return None
+    if not shutil.which("gnome-extensions") or os.geteuid() == 0:
+        return None
+    return {
+        "installed": _extension_installed(),
+        "enabled": _extension_enabled(),
+        "running": gnome_shell.extension_available(),
+    }
+
+
+def pack_extension(dest: Path) -> Path:
+    """Zip the packaged extension the way ``gnome-extensions pack`` lays it out."""
+    source = gnome_shell.extension_dir()
+    bundle = dest / _EXTENSION_BUNDLE
+    with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in gnome_shell.EXTENSION_FILES:
+            archive.write(source / name, arcname=name)
+    return bundle
+
+
+def _enable_in_settings(uuid: str) -> bool:
+    """List the extension as enabled, so the shell loads it at the next login.
+
+    The running shell answers ``gnome-extensions enable`` for an extension it
+    has not loaded with "does not exist", which is every fresh install on
+    Wayland. The setting is what the shell reads when it starts.
+    """
+    enabled = _gsettings_strv("enabled-extensions")
+    if enabled is None:
+        return False
+    ok = uuid in enabled or _gsettings_set_strv("enabled-extensions", [*enabled, uuid])
+    disabled = _gsettings_strv("disabled-extensions") or []
+    if ok and uuid in disabled:
+        ok = _gsettings_set_strv("disabled-extensions", [u for u in disabled if u != uuid])
+    return ok
+
+
+def _user_steps(missing_names: set[str]) -> list[str]:
+    """The unprivileged steps, run as the desktop user after the root ones."""
+    if GNOME_EXTENSION not in missing_names:
+        return []
+    return [
+        f"gnome-extensions install --force {_EXTENSION_BUNDLE}",
+        f"gnome-extensions enable {gnome_shell.EXTENSION_UUID}",
+    ]
+
+
+def install_gnome_extension() -> int:
+    """Install and enable the extension for this user. Returns an exit code."""
+    uuid = gnome_shell.EXTENSION_UUID
+    with tempfile.TemporaryDirectory(prefix="vadgr-cua-extension-") as workdir:
+        bundle = pack_extension(Path(workdir))
+        print(f"\n$ gnome-extensions install --force {bundle.name}")
+        rc = subprocess.run(["gnome-extensions", "install", "--force", str(bundle)]).returncode
+    if rc != 0:
+        print(f"extension install failed (rc={rc})")
+        return rc
+    print(f"$ gnome-extensions enable {uuid}")
+    enable = subprocess.run(
+        ["gnome-extensions", "enable", uuid], capture_output=True, text=True
+    )
+    if enable.returncode != 0 and not _enable_in_settings(uuid):
+        print((enable.stderr or enable.stdout).strip())
+        print("extension enable failed")
+        return enable.returncode or 1
+    if _gsettings_get("disable-user-extensions") == "true":
+        print(
+            "GNOME has user extensions switched off. Turn them on in the "
+            "Extensions app, or run: gsettings set org.gnome.shell "
+            "disable-user-extensions false"
+        )
+    print(RELOGIN_NOTE)
+    return 0
 
 
 def detect_escalation() -> str | None:
@@ -177,14 +378,17 @@ def build_plan(
     plan = [f"{escalate} {step}" for step in steps]
     if not steps and "wl-clipboard" in missing_names and manager is None:
         plan.append("# unknown package manager - add 'wl-clipboard' via your distro's tools")
-    return plan
+    return plan + _user_steps(missing_names)
 
 
 def install_deps(*, assume_yes: bool = False, dry_run: bool = True) -> int:
     """Diagnose, then print the plan (default) or run it under one auth prompt."""
     report = diagnose()
+    notes = report.get("notes", [])
     if not report["missing"]:
         print("All system dependencies are present.")
+        for note in notes:
+            print(note)
         return 0
 
     manager = report["package_manager"]
@@ -200,12 +404,26 @@ def install_deps(*, assume_yes: bool = False, dry_run: bool = True) -> int:
     print("\nPlan:")
     for line in plan:
         print(f"  {line}")
+    if GNOME_EXTENSION in names:
+        print(f"\nThen: {RELOGIN_NOTE}")
+    for note in notes:
+        print(f"\n{note}")
 
     if dry_run or not assume_yes:
         print("\n(dry run - re-run with --yes to execute)")
         return 0
 
-    steps = _privileged_steps(manager, names)
+    rc = 0
+    if names - {GNOME_EXTENSION}:
+        rc = _run_privileged(_privileged_steps(manager, names), escalate)
+    # The extension is the user's own and installs without root, so it goes
+    # ahead even when a root step could not.
+    if GNOME_EXTENSION in names:
+        rc = install_gnome_extension() or rc
+    return rc
+
+
+def _run_privileged(steps: list[str], escalate: str | None) -> int:
     if not steps:
         print("\nNothing runnable (unknown package manager) - install the package manually.")
         return 1

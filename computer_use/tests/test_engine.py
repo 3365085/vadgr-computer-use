@@ -153,6 +153,31 @@ class TestPlatformInfo:
         assert info["backend_available"] is True
         assert "accessibility" not in info
 
+    def test_get_platform_info_names_the_capture_path(self, engine, mock_backend):
+        # After the GNOME Shell extension is installed and the user logged back
+        # in, this is where they read that screenshots go through it.
+        _, capture, _ = mock_backend
+        capture.backend_name = "gnome-shell-extension"
+        assert engine.get_platform_info()["capture"] == "gnome-shell-extension"
+
+    def test_capture_name_defaults_to_the_class(self, mock_backend):
+        from computer_use.core.screenshot import ScreenCapture
+
+        class PlainCapture(ScreenCapture):
+            def capture_full(self):
+                raise NotImplementedError
+
+            def capture_region(self, region):
+                raise NotImplementedError
+
+            def get_screen_size(self):
+                return (1, 1)
+
+            def get_scale_factor(self):
+                return 1.0
+
+        assert PlainCapture().backend_name == "PlainCapture"
+
     def test_get_platform_info_carries_the_structured_block(self, engine, mock_backend):
         # The structured tier's capability is reported, never assumed: a catalogue
         # that lists ui_find where it cannot work is the dead-control rule one
