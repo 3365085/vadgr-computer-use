@@ -910,3 +910,35 @@ class TestIndicatorCue:
 
         mcp_server.click(1, 2)
         assert shell.calls == []
+
+
+class TestUiActByName:
+    def test_the_wire_schema_takes_name_role_and_app(self):
+        from computer_use import mcp_server
+
+        tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+        schema = tools["ui_act"].input_schema
+        assert schema["required"] == ["action"]
+        assert {"ref", "action", "text", "name", "role", "app"} <= set(schema["properties"])
+
+    def test_the_wrapper_threads_every_argument(self, monkeypatch):
+        from computer_use import mcp_server
+        from computer_use.tools.ui import tools as ui_tools
+
+        seen = {}
+
+        def fake(**kwargs):
+            seen.update(kwargs)
+            return {"ok": True}
+
+        monkeypatch.setattr(ui_tools, "ui_act", fake)
+        mcp_server.ui_act(action="click", name="Save", role="button", app="gedit")
+        assert seen == {"ref": "", "action": "click", "text": "", "name": "Save",
+                        "role": "button", "app": "gedit"}
+
+    def test_the_instructions_lead_native_apps_with_ui_act_by_name(self):
+        from computer_use import mcp_server
+
+        text = mcp_server.mcp.instructions
+        assert "`ui_act(action=..., name=..., role=...)`" in text
+        assert text.index("`ui_act(action=") < text.index("`ui_find`")

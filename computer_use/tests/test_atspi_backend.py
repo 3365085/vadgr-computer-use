@@ -1197,3 +1197,111 @@ class TestPerWindowCoordinateTrust:
         be = _backend(_xwayland_tree(), server="wayland")
         found = be.find("push button", "", "")
         assert found[0].coordinate_trust == "none"
+
+
+class TestNearest:
+    """The candidates a ui_act that matched nothing hands back."""
+
+    @staticmethod
+    def _window(*controls):
+        """desktop -> app -> active window holding the given (role, name, states)."""
+        nodes = {
+            ("reg", "/root"): FakeNode("desktop frame", "main", children=[("app", "/a")]),
+            ("app", "/a"): FakeNode("application", "gedit", children=[("win", "/w")]),
+        }
+        kids = []
+        for index, (role, name, states) in enumerate(controls):
+            node = ("app", f"/c{index}")
+            nodes[node] = FakeNode(
+                role, name, states=states, extents=(index, 0, 10, 10),
+                interfaces=[_ACCESSIBLE, _COMPONENT, _ACTION], actions=["Click"],
+            )
+            kids.append(node)
+        nodes[("win", "/w")] = FakeNode(
+            "frame", "Doc - gedit", states=["active", "showing", "visible"],
+            extents=(0, 0, 800, 600), children=kids,
+        )
+        return nodes
+
+    def test_a_legacy_role_name_still_finds_the_button(self):
+        on = ["showing", "visible"]
+        backend = _backend(self._window(
+            ("button", "Save", on), ("button", "Cancel", on),
+            ("label", "Save changes?", on), ("filler", "", on),
+        ))
+        assert backend.find("push button", "Save") == []
+        names = [e.name for e in backend.nearest("push button", "Save")]
+        assert names[0] == "Save"
+        assert "Save changes?" in names
+        assert "Cancel" not in names  # shares a letter, not the request
+        assert "" not in names  # anonymous wrappers are never offered
+
+    def test_a_misspelt_name_ranks_the_closest_first(self):
+        on = ["showing"]
+        backend = _backend(self._window(
+            ("button", "Open", on), ("button", "Save", on), ("button", "Sage", on),
+        ))
+        assert [e.name for e in backend.nearest("", "Svae")][:1] == ["Save"]
+
+    def test_the_limit_holds_and_walk_order_breaks_ties(self):
+        on = ["showing"]
+        backend = _backend(self._window(*[("button", "Save", on)] * 8))
+        found = backend.nearest("", "Save file", limit=3)
+        assert len(found) == 3
+        assert [e.bounds.x for e in found] == [0, 1, 2]
+
+    def test_an_off_screen_control_is_never_a_candidate(self):
+        backend = _backend(self._window(
+            ("button", "Save", ["visible"]), ("button", "Saved", ["showing"]),
+        ))
+        assert [e.name for e in backend.nearest("", "Save")] == ["Saved"]
+
+    def test_candidates_carry_their_window_and_refs_that_act(self):
+        backend = _backend(self._window(("button", "Save", ["showing"])))
+        (candidate,) = backend.nearest("push button", "Save")
+        assert candidate.window == "Doc - gedit"
+        assert candidate.coordinate_trust == "none"  # Wayland, origin (0, 0)
+        assert backend.act(candidate.ref, "click", "")["action"] == "click"
+
+    def test_with_no_name_the_role_decides(self):
+        on = ["showing"]
+        backend = _backend(self._window(("button", "OK", on), ("label", "Status", on)))
+        assert [e.name for e in backend.nearest("push button", "")] == ["OK"]
+
+    def test_nothing_close_is_an_empty_list(self):
+        backend = _backend(self._window(("button", "Open", ["showing"])))
+        assert backend.nearest("", "Quit") == []
+
+
+class TestActByNameEndToEnd:
+    """ui_act by name over the real backend logic: one call instead of two."""
+
+    @pytest.fixture
+    def ui(self, monkeypatch):
+        from computer_use.tools.ui import tools
+
+        return tools
+
+    def test_one_call_clicks_the_named_button(self, ui, monkeypatch):
+        nodes = _tree_with_button(role="button", name="Save")
+        backend = _backend(nodes)
+        monkeypatch.setattr(ui, "resolve_backend", lambda: backend)
+        result = ui.ui_act(action="click", name="save", role="button")
+        assert result["ok"] is True
+        assert nodes[("btn", "/b")].did == [0]
+        assert result["state"]["name"] == "Save"
+        # The returned ref is the button's, for the next call.
+        assert ui.ui_act(result["ref"], "click")["ok"] is True
+        assert nodes[("btn", "/b")].did == [0, 0]
+
+    def test_a_legacy_role_comes_back_as_a_candidate_that_acts(self, ui, monkeypatch):
+        nodes = _tree_with_button(role="button", name="Save")
+        backend = _backend(nodes)
+        monkeypatch.setattr(ui, "resolve_backend", lambda: backend)
+        result = ui.ui_act(action="click", name="Save", role="push button")
+        assert result["error"] == "not_found"
+        assert nodes[("btn", "/b")].did == []
+        (candidate,) = result["candidates"]
+        assert (candidate["role"], candidate["name"]) == ("button", "Save")
+        assert ui.ui_act(candidate["ref"], "click")["ok"] is True
+        assert nodes[("btn", "/b")].did == [0]

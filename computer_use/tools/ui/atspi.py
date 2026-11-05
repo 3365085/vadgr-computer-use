@@ -37,10 +37,13 @@ GNOME 50 / Wayland box and not assumed:
 from __future__ import annotations
 
 import asyncio
+import heapq
 import os
+import re
 import sys
 import threading
 import time
+from difflib import SequenceMatcher
 from typing import Protocol
 
 from computer_use.platform.resolver.session import SessionContext
@@ -169,6 +172,42 @@ _ACT_SETTLE_POLL = 0.03
 # click is deliberately absent: it re-reads once and lets the caller observe the
 # effect where it actually lands.
 _SETTLE_VERBS = frozenset({"toggle", "expand", "focus", "set_text"})
+
+
+# A near miss is offered as a candidate only when the part it is judged on
+# reaches this similarity: below it, "Cancel" would be offered for "Save"
+# because the two share a letter or two.
+_NEAREST_FLOOR = 0.5
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text.lower()))
+
+
+def _similar(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _closeness(want_role: str, want_name: str, role: str, name: str) -> float:
+    """How near an element is to a role and name that matched nothing; 0 if not.
+
+    A requested name decides: the element's name must be close to it, by
+    sequence similarity or by the share of requested words it contains,
+    whichever is higher, and the role only orders the close ones. With no name,
+    the role decides, so a request for the legacy "push button" still surfaces
+    the toolkit's "button".
+    """
+    role_score = _similar(want_role, role) if want_role else 0.0
+    if want_name:
+        if not name:
+            return 0.0
+        wanted = _words(want_name)
+        shared = len(wanted & _words(name)) / len(wanted) if wanted else 0.0
+        name_score = max(_similar(want_name, name), shared)
+        if name_score < _NEAREST_FLOOR:
+            return 0.0
+        return name_score + 0.25 * role_score
+    return role_score if role_score >= _NEAREST_FLOOR else 0.0
 
 
 def _sane_extents(ext: tuple[int, int, int, int] | None):
@@ -665,6 +704,76 @@ class AtspiBackend:
             except StructuredError:
                 return found  # the world moved again; the first pass is the answer
         return found
+
+    def _showing_nodes(self, frame: Node):
+        """Yield the frame and its on-screen descendants, in walk order.
+
+        The same pruning and budgets as find's walk: a subtree that is not
+        showing is skipped whole, and a node that vanished mid-walk is passed
+        over with its subtree.
+        """
+        stack: list[tuple[Node, bool]] = [(frame, True)]
+        visited = examined = 0
+        while stack and visited < _MAX_NODES and examined < _MAX_EXAMINED:
+            node, is_root = stack.pop()
+            examined += 1
+            try:
+                showing = _presumed_showing(self._client.states(node))
+                if not showing and not is_root:
+                    continue
+                visited += 1
+                children = self._client.children(node)
+            except ElementGone:
+                continue
+            if showing:
+                yield node
+            for child in reversed(children):
+                stack.append((child, False))
+
+    def nearest(
+        self, role: str, name: str, app: str = "", limit: int = 5
+    ) -> list[Element]:
+        """The on-screen elements closest to a role and name that matched nothing.
+
+        One walk of the windows find searches, scoring each meaningful element
+        and building full elements only for the best few. A ui_act that found
+        nothing returns these, so the next call can name a ref instead of
+        reading the whole tree.
+        """
+        self._require_bus()
+        best: list[tuple[float, int, Node, str | None, str | None]] = []
+        order = 0
+        for frame in self._resolve_frames(app):
+            try:
+                window = self._client.name(frame) or None
+            except ElementGone:
+                continue
+            trust = self._frame_trust(frame) if self._session.server != "x11" else None
+            for node in self._showing_nodes(frame):
+                try:
+                    node_role = self._client.role_name(node)
+                    node_name = self._client.name(node)
+                except ElementGone:
+                    continue
+                if not _is_meaningful(node_role, node_name):
+                    continue
+                score = _closeness(role, name, node_role, node_name)
+                if score <= 0.0:
+                    continue
+                order += 1
+                # A min-heap of the best `limit`: on equal scores the later
+                # node is the one dropped, so walk order breaks ties.
+                heapq.heappush(best, (score, -order, node, window, trust))
+                if len(best) > limit:
+                    heapq.heappop(best)
+        ranked = sorted(best, key=lambda item: (-item[0], -item[1]))
+        out: list[Element] = []
+        for _score, _order, node, window, trust in ranked:
+            try:
+                out.append(self._element(node, window=window, trust=trust))
+            except ElementGone:
+                continue
+        return out
 
     # -- acting ------------------------------------------------------------
 
