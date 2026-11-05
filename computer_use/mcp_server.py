@@ -128,12 +128,15 @@ mcp = _CompactMCPServer(
         "1. Web pages: `browser` (DOM selectors). Confirm each mutating op "
         "with its returned `ok`/`checked` or a read-back (get_value, "
         "read_text, wait_for), not a screenshot.\n"
-        "2. Native app windows: `ui_find` the control by name and/or role "
+        "2. Native app windows: `ui_act(action=..., name=..., role=...)` "
+        "finds the control and acts in one call when exactly one matches "
         "(roles read like \"button\", \"toggle button\", \"text box\", "
-        "\"label\"), then `ui_act` on its ref. The act returns the element "
-        "re-read, so it needs no screenshot. Use `ui_tree` only to discover "
-        "what to search for, with a small depth: a whole window can cost "
-        "thousands of tokens. If a ui_* call reports the tier unavailable, or "
+        "\"label\"). On `ambiguous` or `not_found` it lists candidate refs: "
+        "act on one with `ui_act(ref=...)`, or `ui_find` to look further. The "
+        "act returns the element re-read, so it needs no screenshot. Use "
+        "`ui_tree` only to discover what to search for, with a small depth: a "
+        "whole window can cost thousands of tokens. If a ui_* call reports the "
+        "tier unavailable, or "
         "a window's tree is empty, go to step 3. On Linux, a Chromium or "
         "Electron window with an empty tree builds one when it is relaunched "
         "through `app_open`.\n"
@@ -1026,15 +1029,32 @@ def ui_windows() -> dict:
 
 @mcp.tool()
 @tool(name="ui_act", tier=Tier.ONE, risk=Risk.MEDIUM)
-def ui_act(ref: str, action: str, text: str = "") -> dict:
-    """Act on a native UI element by ref (Tier 1): click, focus, set_text, toggle, expand.
+def ui_act(
+    action: str,
+    ref: str = "",
+    text: str = "",
+    name: str = "",
+    role: str = "",
+    app: str = "",
+) -> dict:
+    """Act on one native UI element (Tier 1): click, focus, set_text, toggle, expand.
+
+    Target it directly by ``name`` and/or ``role`` (e.g. "button"), with ``app``
+    scoping the search as in ui_find, or by a ``ref`` from ui_find; a ``ref``
+    wins when both are given. By name it acts only when exactly one element
+    matches, and an element whose whole name equals ``name`` wins over partial
+    matches. No match returns ``not_found`` with the nearest ``candidates``;
+    several return ``ambiguous`` with up to five candidate refs and the
+    ``count``. A by-name act also returns the ``ref`` it used.
 
     Re-reads the element after acting and returns its new state, so a toggle that
     did not toggle is visible in the response. A ref that no longer resolves fails
     ``element_gone`` and never falls back to clicking its old coordinates. Pass
     ``text`` for ``set_text``.
     """
-    return _ui_impl.ui_act(ref=ref, action=action, text=text)
+    return _ui_impl.ui_act(
+        ref=ref, action=action, text=text, name=name, role=role, app=app
+    )
 
 
 @mcp.tool()

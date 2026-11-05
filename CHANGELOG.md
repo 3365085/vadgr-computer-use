@@ -11,6 +11,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Require authenticated final helper identities for managed installations and
   verify exact signed helper adoption offline for standalone clients.
 - Publish retained profile artifacts without rebuilding their validated bytes.
+- Let `ui_act` find its own target by `name`, `role` and `app` when no `ref` is
+  given, so a native interaction takes one call instead of a `ui_find` and a
+  `ui_act`. It acts only when exactly one element matches, and a whole-name
+  match wins over partial ones. No match returns `not_found` with the nearest
+  candidates, several return `ambiguous` with up to five candidate refs, and a
+  by-name act returns the ref it used. A `ref` still wins when both are given.
+  The server instructions now lead native apps with `ui_act` by name.
 
 ### Changed
 

@@ -33,6 +33,11 @@ NO_TREE = "no_tree"
 ELEMENT_GONE = "element_gone"
 TIMEOUT = "timeout"
 UNSUPPORTED_ACTION = "unsupported_action"
+# ui_act by name and role: it acts only on exactly one match, and names the
+# other two outcomes rather than guessing.
+NOT_FOUND = "not_found"
+AMBIGUOUS = "ambiguous"
+NO_TARGET = "no_target"
 
 # The one-line remedy that ships with at_spi_unavailable. It points at the single
 # cross-distro provisioner rather than a hand-typed package line, per the family's
@@ -165,6 +170,9 @@ class StructuredBackend(Protocol):
 
     def tree(self, depth: int, app: str) -> dict: ...
     def find(self, role: str, name: str, app: str) -> list[Element]: ...
+    def nearest(
+        self, role: str, name: str, app: str, limit: int
+    ) -> list[Element]: ...
     def act(self, ref: str, action: str, text: str) -> dict: ...
     def wait(
         self, role: str, name: str, timeout_ms: int, app: str
