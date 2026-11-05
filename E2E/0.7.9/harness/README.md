@@ -54,3 +54,12 @@ The Windows fixture's `pid-reuse` fault changes only a copied isolated endpoint'
 creation identity, preserving its exact original bytes in a private local
 backup. `pid-restore` restores those bytes. Neither action touches an owner
 endpoint or terminates a process.
+
+`gnome_cells.py` drives the R04 to R09 cells on a real GNOME Wayland desktop.
+Run it with the installed entry point's own interpreter so the installed build
+is the code under test. It calls the server's MCP tool layer in process, or the
+vadgr GNOME Shell extension over the session bus, and prints JSON lines; it
+assigns no verdict. `box`, `fallback` and `flash --portal-control` take one
+portal screenshot each, which flashes the screen, and `fallback` disables and
+re-enables the extension. `key_fixture.py` is a disposable GTK 4 window, run
+with the system Python, that records the keys it receives for R06.

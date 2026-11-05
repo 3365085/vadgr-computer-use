@@ -20,6 +20,11 @@ The Linux accessibility follow-up is
 are merged historical boundaries, not targets for new results. The follow-up
 evidence is in `https://github.com/MONTBRAIN/vadgr-docs/pull/194`.
 
+The GNOME indicator, native act and Flutter follow-up (R04 to R09) is on branch
+`feat/gnome-indicator-native-acts`, product source
+`24e4516b924bdf06679ac2be45f6060929f09b3e`. Its evidence is the helper output
+recorded in each cell.
+
 Signed-transition repair, 2026-09-27: the current source adds exact authenticated
 signed predecessor catalogs, final-manifest handoff verification and signed
 state transitions across different packaged inputs. The historical frozen source
@@ -3012,6 +3017,202 @@ members; this does not claim timestamped signing itself is reproducible.
 Repeat the failed public path before diagnosis. Add a regression, rebuild and
 reinstall, record the new identity and rerun the entire affected cell.
 Retain failed and fixed boundaries. Shared changes invalidate earlier host results.
+
+## Supplementary R04 to R09: GNOME indicator, native acts and Flutter reads
+
+These cells cover the GNOME Shell extension (on-screen indicator, Esc to stop
+and flash-free capture), `ui_act` by name, the Flutter accessibility stall, the
+screenshot coordinate space after a thumbnail and `app=` scoping by window
+title. They change no Windows, macOS or WSL implementation: the extension and
+its capture path exist only on GNOME Shell and stay inert elsewhere, which the
+unit suites cover, and the native accessibility tier is Linux only.
+
+Host for every result below: Ubuntu 26.04 LTS, GNOME Shell 50.1 and mutter 50.1
+on Wayland, x86_64, one 2560x1600 monitor at 1.33 fractional scale, input
+through Mutter RemoteDesktop. Product source
+`24e4516b924bdf06679ac2be45f6060929f09b3e` on branch
+`feat/gnome-indicator-native-acts`, installed with `uv tool install` and
+provisioned with `vadgr-cua install-deps --yes` plus a new login. Each cell
+names an earlier head where its observation predates that source.
+
+Helpers: `harness/gnome_cells.py`, run with the installed entry point's own
+interpreter so the installed build is the code under test, and
+`harness/key_fixture.py`, a disposable GTK 4 window that records the keys it
+receives. `box`, `fallback` and `flash --portal-control` each take one portal
+screenshot, which flashes the screen: tell the person at the desk first.
+
+### R04-linux-x86_64: flash-free capture and its fallback
+
+**Precondition:** A real GNOME Wayland session with the development build
+installed, `vadgr-cua install-deps --yes` run and a new login since, so that
+`gnome-extensions info vadgr-cua@vadgr.com` reads `ACTIVE`.
+
+**Setup:** Start a session bus observer limited to capture calls:
+`dbus-monitor --session "type='method_call',interface='org.freedesktop.portal.Screenshot'"
+"type='method_call',interface='org.gnome.Shell.Screenshot'"
+"type='method_call',interface='com.vadgr.cua.Shell',member='Screenshot'"`.
+
+**Action:** Run `gnome_cells.py edges`. Tell the person at the desk which step
+is the control, then run `gnome_cells.py flash --portal-control`, whose pill
+labels each step. Run `gnome_cells.py fallback`, which disables the extension,
+builds a capture and captures, re-enables it and captures again with the same
+object. With the person present, lock the screen with `loginctl lock-session`,
+capture through a server started before the lock, and capture again after the
+person unlocks.
+
+**Expected observable and oracle:** `get_platform_info` reports
+`capture: gnome-shell-extension`. The bottom and right edge bands of a PNG
+capture taken while the glow is lit hold no glow pixels. The observer records
+every vadgr capture as `com.vadgr.cua.Shell.Screenshot` and records no portal
+or `org.gnome.Shell.Screenshot` call except the labelled control. The person
+sees no flash except at the control. While the extension is away the capture is
+still the extension's, served by the portal per call, and it returns to the
+extension without a restart, after an unlock as after a re-enable.
+
+**Evidence:** Helper JSON lines, the observer log and the person's report.
+
+**Cleanup:** Stop the observer. Confirm the extension reads `ACTIVE`.
+
+**Result:** Pass on the host above. `edges`: capture `gnome-shell-extension`;
+edge fractions top 0.0015 (top bar icons), bottom 0, left 0, right 0. `flash`:
+the observer recorded 8 extension captures and one portal call, the control;
+the person reported no flash except the control. `fallback`: chosen
+`GnomeShellScreenCapture`, captured via `portal` while away and via
+`gnome-shell-extension` after re-enable. The lock fallback was observed at
+`7a9c851c44cac1da65183ce39fce1428b6db130b`: locked capture via the portal, the
+extension again after unlock. Before this source a server started while the
+extension was away stayed on the portal for its whole life; that is the case
+`fallback` now covers. GNOME X11 is not run (X11 captures through mss, never
+this path, but the indicator still applies). KDE Plasma, wlroots and the
+minimal install have no GNOME Shell and are not applicable. Windows, macOS and
+WSL are not applicable.
+
+### R05-linux-x86_64: indicator placement and first-action visibility
+
+**Precondition:** As R04, with a fractional scale recorded.
+
+**Setup:** Leave vadgr idle for at least 15 seconds so the overlay has faded.
+
+**Action:** Run `gnome_cells.py box --x 1000 --y 600 --w 400 --h 200 --save
+crop.png`: from the idle overlay it asks the extension for a target box in
+capture-image pixels and takes one portal capture about half a second later.
+The person at the desk watches the `flash` steps of R04.
+
+**Expected observable and oracle:** Each side of the requested rectangle has
+box pixels within 3 pixels of it in the portal capture, so the box is placed in
+image pixels and is visible on the first action after an idle spell. The glow
+lights every monitor edge and the pill names the action and the Esc hint.
+
+**Evidence:** Helper JSON line, the saved crop and the person's report.
+
+**Cleanup:** None beyond the crop file.
+
+**Result:** Pass on the host above. Box pixels within 3 pixels of each side:
+left 580, right 576, top 1181, bottom 1175, at scale 1.33 in a 2560x1600
+capture; the crop shows the box exactly on the rectangle. Before this source
+the overlay faded in over 400 ms and the same check found no box. The person
+confirmed the glow and the pill text. Multiple monitors are not
+run: one monitor. Other desktops and operating systems as in R04.
+
+### R06-linux-x86_64: Esc stops desktop tools for 30 seconds
+
+This is an owner cell: a person must press the key.
+
+**Precondition:** As R04, plus PyGObject for the fixture.
+
+**Setup:** Start `python3 key_fixture.py keys.log` and give its window focus.
+
+**Action:** Run `gnome_cells.py own-esc`, which sends `a` and then `escape`
+through `key_press`. Then run `gnome_cells.py esc`, which keeps the overlay lit,
+and have the person press Esc once in the fixture window.
+
+**Expected observable and oracle:** The fixture log records `a` and `Escape`
+from `own-esc`, so vadgr's own Esc reaches the application. After the person's
+Esc the fixture log gains no `Escape` line, the pill reads `Stopped`, and
+`screenshot`, `click`, `key_press` and `type_text` each return `user_stopped`
+without acting. Desktop tools act again 30 seconds after the press.
+
+**Evidence:** Helper JSON lines and the fixture log.
+
+**Cleanup:** Close the fixture window.
+
+**Result:** Pass on the host above for `own-esc`: the fixture logged `a` and
+`Escape`. The person's Esc was observed at
+`7a9c851c44cac1da65183ce39fce1428b6db130b` in two runs: no `Escape` reached the
+focused fixture, the person saw the `Stopped` pill fade, `screenshot`, `click`
+and `type_text` returned `user_stopped` (that run did not call `key_press`), and
+tools acted again 29.6 seconds after the stop was seen. This source changes only the text form of
+that reply for tools whose result is text (`user_stopped: ...` instead of
+escaped JSON); the unit suite covers it and it was not re-driven live. Other
+desktops and operating systems as in R04.
+
+### R07-linux-x86_64: ui_act by name, role and app
+
+**Precondition:** GNOME Calculator (GTK 4) installed and not running.
+
+**Action:** Run `gnome_cells.py acts --app Calculator`. It opens Calculator,
+acts on the `7` button by name and role, then asks for a near-miss name
+(`Backspase`), an unknown name and role `button` alone, and reads the display.
+
+**Expected observable and oracle:** The single match acts and returns the ref
+it used, and the display text box reads `7`. The near miss returns `not_found`
+with the nearest candidate. The unknown name returns `not_found` with no
+candidates. Role alone returns `ambiguous` with the match count and at most
+five candidate refs. Neither `not_found` nor `ambiguous` acts: the display
+still reads `7` afterwards.
+
+**Evidence:** Helper JSON lines.
+
+**Cleanup:** Close the Calculator window the helper opened.
+
+**Result:** Pass on the host above with gnome-calculator 50.0: one match acted
+and returned `atspi:10`; the near miss returned `not_found` with `Backspace`;
+the unknown name returned `not_found` with no candidates; role alone returned
+`ambiguous` with count 30 and five refs; the display read `7` at the end.
+GNOME X11, KDE Plasma and the minimal install are not run. Windows, macOS and
+WSL are not applicable: the native accessibility tier is Linux only.
+
+### R08-linux-x86_64: a Flutter app is read in time, by its window title
+
+**Precondition:** A Flutter Linux application with an open window whose
+process maps `libflutter_linux_gtk.so` and whose accessible application name
+differs from its window title. Here FlClash 0.8.91, whose application name is
+`com.follow.clash`.
+
+**Action:** Run `gnome_cells.py flutter --title FlClash`.
+
+**Expected observable and oracle:** `ui_tree` at depth 6 and `ui_find` both
+succeed when scoped by the window title, each within 2 seconds. Elements carry
+`unknown: ["bounds"]` and their states are read.
+
+**Evidence:** Helper JSON lines.
+
+**Cleanup:** None: the helper opens nothing.
+
+**Result:** Pass on the host above: `ui_tree` 0.13 s and `ui_find` 0.04 s, with
+66 and 38 elements marked unknown bounds and none marked unknown states. At
+`5a0159e0a6489e70720af843230e173cf7d72627` the same `ui_tree` took 25 seconds:
+a bus monitor showed the application answering `GetExtents` by calling its own
+`GetExtents` and blocking until the 25 second bus timeout. Other desktops and
+operating systems as in R07.
+
+### R09-linux-x86_64: a thumbnail keeps the coordinate space
+
+**Action:** Run `gnome_cells.py regions`: a full screenshot, a thumbnail, then
+a region at (600, 570, 640, 60) in the full screenshot's coordinates.
+
+**Expected observable and oracle:** The region succeeds and its size is the
+request scaled to the capture, not four times that.
+
+**Evidence:** Helper JSON line.
+
+**Cleanup:** None.
+
+**Result:** Pass on the host above: a 1366x853 coordinate space and a 1200x112
+region. Before this source, 2 of 11 region calls in subscription driver
+sessions failed, each right after a thumbnail. The mapping is the same
+arithmetic on every operating system, so the other hosts need no live run for
+it; the unit suite covers it.
 
 ## Supplementary R03: Linux complete keyboard chords
 
