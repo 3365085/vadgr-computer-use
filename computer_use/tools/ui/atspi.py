@@ -296,6 +296,17 @@ def _proc_comm(pid: int) -> str:
         return ""
 
 
+def _loads_flutter(pid: int) -> bool:
+    """Whether the process has Flutter's Linux embedder mapped. Best effort."""
+    if pid <= 0:
+        return False
+    try:
+        with open(f"/proc/{pid}/maps") as handle:
+            return any("libflutter_linux_gtk" in line for line in handle)
+    except OSError:
+        return False
+
+
 def decode_states(word_low: int, word_high: int) -> tuple[str, ...]:
     """Turn AT-SPI's two-word state bitfield into sorted state names.
 
@@ -1151,6 +1162,8 @@ class _DbusClient:
         self._role_names: dict[tuple[str, int], str] = {}
         # Apps whose Cache.GetItems never answers; asked once, then read live.
         self._no_items: set[str] = set()
+        # Apps running Flutter's embedder, by bus name: never asked GetExtents.
+        self._flutter: dict[str, bool] = {}
         # Per traversal (one tool call): the apps that left a GetState or
         # GetExtents unanswered, and the fields each node could not read. A
         # new traversal asks again, so an app that recovers is read in full.
@@ -1378,7 +1391,23 @@ class _DbusClient:
         high = words[1] if len(words) > 1 else 0
         return decode_states(low, high)
 
+    def _is_flutter(self, bus_name: str) -> bool:
+        if bus_name not in self._flutter:
+            try:
+                pid = self.pid((bus_name, _ROOT_PATH))
+            except Exception:
+                pid = 0
+            self._flutter[bus_name] = _loads_flutter(pid)
+        return self._flutter[bus_name]
+
     def extents(self, node: Node) -> tuple[int, int, int, int] | None:
+        # Flutter's embedder answers GetExtents by asking its own in-process
+        # AtkPlug over D-Bus, a call it cannot serve while it waits, so every
+        # one freezes the whole app until the 25 second bus timeout (seen on
+        # the wire: the app calling itself). Its elements get no bounds instead.
+        if self._is_flutter(node[0]):
+            self._unknown.setdefault(node, set()).add("bounds")
+            return None
         # An app that never answers GetExtents (the Ubuntu App Center's Flutter
         # embedder; gi.Atspi times out on it identically, so it is the app)
         # costs one bounded wait per traversal: the timeout reads as unknown

@@ -171,6 +171,7 @@ class _FakeBus:
         self._blank_bulk_actions = blank_bulk_actions
         self._silent_settext = silent_settext
         self.extents_answer = None
+        self.pids = {}  # bus name -> pid, for GetConnectionUnixProcessID
         self.live_calls = 0
         self.timeouts = []  # (member, per-call timeout) for every call
 
@@ -203,6 +204,8 @@ class _FakeBus:
             if items is None:
                 return _Reply(None, error_name="org.freedesktop.DBus.Error.UnknownMethod")
             return _Reply([items])
+        if member == "GetConnectionUnixProcessID":
+            return _Reply([self.pids.get(body[0], 0)])  # the bus daemon, not the app
         # Any per-node read here is a live fallback; count it and answer plainly.
         self.live_calls += 1
         if member == "GetRoleName":
@@ -381,6 +384,23 @@ class TestClientServesFromCache:
         assert client.extents(("snapstore", "/other")) is None
         assert bus.live_calls == calls_after_first  # breaker: no second ask
         assert client.unknown_fields(("snapstore", "/other")) == ("bounds",)
+
+    def test_a_flutter_app_is_never_asked_getextents(self, monkeypatch):
+        # Flutter's embedder blocks every GetExtents for the 25 second bus
+        # timeout and freezes the whole app meanwhile, so no bounded wait is
+        # short enough: the app is recognised by its process and never asked.
+        from computer_use.tools.ui import atspi
+
+        monkeypatch.setattr(atspi, "_loads_flutter", lambda pid: pid == 42)
+        bus = _FakeBus({}, hang_members={"GetExtents"}, hang_dests={"flclash"})
+        bus.pids = {"flclash": 42}
+        client = _DbusClient(bus)
+        client.begin_traversal()
+        assert client.extents(("flclash", "/btn")) is None
+        assert ("GetExtents", 0.5) not in bus.timeouts
+        assert client.unknown_fields(("flclash", "/btn")) == ("bounds",)
+        bus.extents_answer = (1, 2, 3, 4)
+        assert client.extents(("gtk", "/btn")) == (1, 2, 3, 4)
 
     def test_extents_breaker_is_per_app_not_global(self):
         bus = _FakeBus({}, hang_members={"GetExtents"}, hang_dests={"snapstore"})
