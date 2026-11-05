@@ -20,8 +20,8 @@ The Linux accessibility follow-up is
 are merged historical boundaries, not targets for new results. The follow-up
 evidence is in `https://github.com/MONTBRAIN/vadgr-docs/pull/194`.
 
-The GNOME indicator, native act and Flutter follow-up (R04 to R09) is on branch
-`feat/gnome-indicator-native-acts`, product source
+The GNOME indicator, native act and Flutter follow-up (R04 to R09) is
+`https://github.com/MONTBRAIN/vadgr-computer-use/pull/136`, product source
 `24e4516b924bdf06679ac2be45f6060929f09b3e`. Its evidence is the helper output
 recorded in each cell.
 
@@ -3030,8 +3030,8 @@ unit suites cover, and the native accessibility tier is Linux only.
 Host for every result below: Ubuntu 26.04 LTS, GNOME Shell 50.1 and mutter 50.1
 on Wayland, x86_64, one 2560x1600 monitor at 1.33 fractional scale, input
 through Mutter RemoteDesktop. Product source
-`24e4516b924bdf06679ac2be45f6060929f09b3e` on branch
-`feat/gnome-indicator-native-acts`, installed with `uv tool install` and
+`24e4516b924bdf06679ac2be45f6060929f09b3e` from
+`https://github.com/MONTBRAIN/vadgr-computer-use/pull/136`, installed with `uv tool install` and
 provisioned with `vadgr-cua install-deps --yes` plus a new login. Each cell
 names an earlier head where its observation predates that source.
 
