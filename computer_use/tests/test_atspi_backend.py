@@ -72,6 +72,8 @@ class FakeClient:
         # invalidate() clears the app's entries, which is what acting must do.
         self._stale_states = dict(stale_states or {})
         self.states_reads = 0  # how many times states() was asked, for latency tests
+        self.traversals = 0  # how many tool calls began a traversal
+        self.unknown: dict = {}  # node -> fields the app left unanswered
         # A spy on the screen-reader write the tier removed. The backend must
         # never call set_screen_reader (it would start a screen reader on GNOME),
         # so an empty sr_log is the proof. sr_children models the content a thin
@@ -100,6 +102,12 @@ class FakeClient:
         # The fake tree already is the in-memory snapshot, so warming is a no-op;
         # this keeps it a full _Client so the backend can call it unconditionally.
         pass
+
+    def begin_traversal(self):
+        self.traversals += 1
+
+    def unknown_fields(self, node):
+        return tuple(self.unknown.get(node, ()))
 
     def invalidate(self, node):
         bus_name = node[0]
@@ -1197,3 +1205,29 @@ class TestPerWindowCoordinateTrust:
         be = _backend(_xwayland_tree(), server="wayland")
         found = be.find("push button", "", "")
         assert found[0].coordinate_trust == "none"
+
+
+class TestTraversals:
+    """Each tool call is one traversal: the scope of the stalled-app skip."""
+
+    def test_each_read_and_act_begins_exactly_one(self):
+        client = FakeClient(_tree_with_button())
+        backend = AtspiBackend(client, _session())
+        backend.tree(depth=2)
+        assert client.traversals == 1
+        ref = backend.find("push button", "")[0].ref
+        assert client.traversals == 2
+        backend.act(ref, "click", "")
+        assert client.traversals == 3
+        backend.windows()
+        assert client.traversals == 4
+
+    def test_unknown_fields_reach_the_element_and_only_where_unanswered(self):
+        client = FakeClient(_tree_with_button())
+        backend = AtspiBackend(client, _session())
+        client.unknown = {("btn", "/b"): ("bounds", "states")}
+        (element,) = backend.find("push button", "")
+        assert element.as_dict()["unknown"] == ["bounds", "states"]
+        client.unknown = {}
+        (element,) = backend.find("push button", "")
+        assert "unknown" not in element.as_dict()

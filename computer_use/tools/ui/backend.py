@@ -105,6 +105,10 @@ class Element:
     vouches for the window origin), a Wayland-native client's are
     window-relative. On X11 every bound is real and the capability block
     already says so once.
+
+    ``unknown`` names the fields the application did not answer for in time
+    ("bounds", "states"). Their null and empty values are then not facts about
+    the element, and the field says so rather than leaving a reader to guess.
     """
 
     ref: str
@@ -115,6 +119,7 @@ class Element:
     text: str | None = None
     window: str | None = None
     coordinate_trust: str | None = None
+    unknown: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
         out = {
@@ -135,6 +140,10 @@ class Element:
         # Only carried where the session makes it ambiguous (Wayland).
         if self.coordinate_trust is not None:
             out["coordinate_trust"] = self.coordinate_trust
+        # Only carried where a read went unanswered, so an answering app pays
+        # nothing for it.
+        if self.unknown:
+            out["unknown"] = list(self.unknown)
         return out
 
 

@@ -37,6 +37,7 @@ GNOME 50 / Wayland box and not assumed:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import sys
 import threading
@@ -124,6 +125,13 @@ _WAIT_POLL_SECONDS = 0.1
 # The most characters one text read returns, so a huge document body never
 # turns a tree read into a megabyte transfer.
 _TEXT_READ_CAP = 5000
+
+# GetState and GetExtents get their own short bound. Flutter's embedder leaves
+# both unanswered for some nodes (observed on the Ubuntu App Center), and at the
+# bus's five-second timeout one ui_tree of such an app took 25 seconds. After
+# one unanswered read an application is not asked either again for the rest of
+# that traversal (one tool call), and those fields read as unknown.
+_BOUNDED_READ_SECONDS = 0.5
 
 # The largest extent, in pixels, that is ever a real widget. GTK reports
 # uninitialised memory as the extents of an unrealised widget (observed: a hidden
@@ -297,6 +305,8 @@ class _Client(Protocol):
     def name(self, node: Node) -> str: ...
     def states(self, node: Node) -> tuple[str, ...]: ...
     def extents(self, node: Node) -> tuple[int, int, int, int] | None: ...
+    def begin_traversal(self) -> None: ...
+    def unknown_fields(self, node: Node) -> tuple[str, ...]: ...
     def interfaces(self, node: Node) -> tuple[str, ...]: ...
     def actions(self, node: Node) -> list[str]: ...
     def do_action(self, node: Node, index: int) -> bool: ...
@@ -505,6 +515,9 @@ class AtspiBackend:
             text=text,
             window=window,
             coordinate_trust=trust,
+            # Read last, after bounds and states: which of the two the
+            # application left unanswered in this traversal.
+            unknown=self._client.unknown_fields(node),
         )
 
     def _node_dict(self, node: Node, depth: int, budget: list[int]) -> dict:
@@ -557,6 +570,7 @@ class AtspiBackend:
 
     def tree(self, depth: int, app: str = "") -> dict:
         self._require_bus()
+        self._client.begin_traversal()
         # A window that answers with no meaningful descendant is reported as it
         # is (tree-only). The tier never raises ScreenReaderEnabled to force a
         # thin toolkit to build its tree, because on GNOME that autostarts a
@@ -652,6 +666,9 @@ class AtspiBackend:
 
     def find(self, role: str, name: str, app: str = "") -> list[Element]:
         self._require_bus()
+        # One traversal for both passes: an application that stalled the first
+        # is not asked again by the retry.
+        self._client.begin_traversal()
         found, gone = self._find_pass(role, name, app)
         if gone:
             # The walk lost at least one subtree to a node that stopped
@@ -717,6 +734,7 @@ class AtspiBackend:
 
     def act(self, ref: str, action: str, text: str) -> dict:
         self._require_bus()
+        self._client.begin_traversal()
         node = self._node_for(ref)
         # Acting is the one operation whose whole value is the element's state
         # around the action, and the warm cache is a snapshot from find-time: a
@@ -796,6 +814,7 @@ class AtspiBackend:
     def windows(self) -> dict:
         """Every open top-level window across all apps, for the model to target."""
         self._require_bus()
+        self._client.begin_traversal()
         out = []
         for app in self._apps():
             try:
@@ -836,6 +855,7 @@ class AtspiBackend:
 
         if not self._client.reachable():
             return None
+        self._client.begin_traversal()
         result = None
         for app in self._client.children(self._client.root()):
             try:
@@ -892,7 +912,15 @@ class _AtspiBus:
 
     def run(self, coro):
         loop = self._ensure_loop()
-        return asyncio.run_coroutine_threadsafe(coro, loop).result(self._timeout)
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return future.result(self._timeout)
+        except (concurrent.futures.TimeoutError, asyncio.TimeoutError) as exc:
+            # Python 3.10 raises its own TimeoutError classes here, apart from
+            # the builtin one every caller catches, so they are folded into it.
+            # A call still pending on the loop is cancelled, not leaked.
+            future.cancel()
+            raise TimeoutError(str(exc) or "AT-SPI call timed out") from exc
 
     def close(self) -> None:
         # For one-shot probes (reachability, enable) that must not leave a loop
@@ -921,17 +949,26 @@ class _AtspiBus:
         address = reply.body[0]
         self._a11y = await MessageBus(bus_address=address).connect()
 
-    async def call(self, dest, path, iface, member, signature="", body=None):
+    async def call(
+        self, dest, path, iface, member, signature="", body=None, timeout=None
+    ):
+        """One method call on the accessibility bus.
+
+        ``timeout`` bounds the call alone, apart from connecting, which a first
+        call may also have to do: a slow connect must not read as a slow app.
+        """
         from dbus_fast import Message
 
         await self._ensure_connected()
-        reply = await self._a11y.call(
+        pending = self._a11y.call(
             Message(
                 destination=dest, path=path, interface=iface, member=member,
                 signature=signature, body=list(body) if body else [],
             )
         )
-        return reply
+        if timeout is None:
+            return await pending
+        return await asyncio.wait_for(pending, timeout)
 
     async def session_call(self, dest, path, iface, member, signature="", body=None):
         from dbus_fast import Message
@@ -1003,10 +1040,42 @@ class _DbusClient:
         # persist for the process: the cache is kept and calibration only grows.
         self._cache: dict[str, CacheSnapshot] = {}
         self._role_names: dict[tuple[str, int], str] = {}
-        # Apps whose GetExtents never answers; asked once, then read as boundless.
-        self._no_extents: set[str] = set()
         # Apps whose Cache.GetItems never answers; asked once, then read live.
         self._no_items: set[str] = set()
+        # Per traversal (one tool call): the apps that left a GetState or
+        # GetExtents unanswered, and the fields each node could not read. A
+        # new traversal asks again, so an app that recovers is read in full.
+        self._slow_apps: set[str] = set()
+        self._unknown: dict[Node, set[str]] = {}
+
+    def begin_traversal(self) -> None:
+        self._slow_apps.clear()
+        self._unknown.clear()
+
+    def unknown_fields(self, node: Node) -> tuple[str, ...]:
+        return tuple(sorted(self._unknown.get(node, ())))
+
+    def _bounded_read(self, node: Node, iface, member, field, signature="", body=None):
+        """GetState or GetExtents, bounded at half a second; None if unanswered.
+
+        An application that leaves one unanswered is not asked either again in
+        this traversal, so it costs one bounded wait rather than a full bus
+        timeout per node, and the node's field is recorded as unknown.
+        """
+        if node[0] in self._slow_apps:
+            self._unknown.setdefault(node, set()).add(field)
+            return None
+        try:
+            return self._bus.run(
+                self._bus.call(
+                    node[0], node[1], iface, member, signature, body,
+                    timeout=_BOUNDED_READ_SECONDS,
+                )
+            )
+        except TimeoutError:
+            self._slow_apps.add(node[0])
+            self._unknown.setdefault(node, set()).add(field)
+            return None
 
     def warm_caches(self, bus_names: list[str]) -> None:
         """Bulk-read each app's exported tree with one concurrent GetItems each.
@@ -1080,11 +1149,12 @@ class _DbusClient:
     def _run(self, coro):
         """A per-node call, where no answer at all means the node is gone.
 
-        The Ubuntu App Center's replaced nodes answer nothing after it
-        navigates (GetState observed hanging until the client timeout, and
-        gi.Atspi times out on them the same way), so a node the app will not
-        answer for is ElementGone, which every walk already skips, never a raw
-        TimeoutError that kills the whole read.
+        A node the app will not answer for at all (the Ubuntu App Center's
+        replaced nodes after it navigates; gi.Atspi times out on them the same
+        way) is ElementGone, which every walk already skips, never a raw
+        TimeoutError that kills the whole read. GetState and GetExtents do not
+        come here: they are bounded on their own and an unanswered one reads
+        as an unknown field of a node that is still there.
         """
         try:
             return self._bus.run(coro)
@@ -1188,7 +1258,12 @@ class _DbusClient:
         snapshot = self._cached(node)
         if snapshot is not None:
             return snapshot.item(node).states
-        reply = self._call(node, _ACCESSIBLE, "GetState")
+        reply = self._bounded_read(node, _ACCESSIBLE, "GetState", "states")
+        if reply is None:
+            # Unknown, which an empty set already means to the walk: presumed
+            # showing, so the node and its subtree are still read.
+            return ()
+        self._check(reply)
         words = list(reply.body[0])
         low = words[0] if len(words) > 0 else 0
         high = words[1] if len(words) > 1 else 0
@@ -1196,21 +1271,13 @@ class _DbusClient:
 
     def extents(self, node: Node) -> tuple[int, int, int, int] | None:
         # An app that never answers GetExtents (the Ubuntu App Center's Flutter
-        # embedder; gi.Atspi times out on it identically, so it is the app) is
-        # asked exactly once: the timeout reads as "no bounds", and the app goes
-        # on a no-extents list so a tree of matched elements costs one stalled
-        # call, not one per element.
-        if node[0] in self._no_extents:
-            return None
-        try:
-            reply = self._bus.run(
-                self._bus.call(
-                    node[0], node[1], _COMPONENT, "GetExtents", "u",
-                    [_COORD_SCREEN],
-                )
-            )
-        except TimeoutError:
-            self._no_extents.add(node[0])
+        # embedder; gi.Atspi times out on it identically, so it is the app)
+        # costs one bounded wait per traversal: the timeout reads as unknown
+        # bounds, and the rest of the traversal does not ask that app again.
+        reply = self._bounded_read(
+            node, _COMPONENT, "GetExtents", "bounds", "u", [_COORD_SCREEN]
+        )
+        if reply is None:
             return None
         if _is_error(reply):
             if reply.error_name in self._GONE_ERRORS:
