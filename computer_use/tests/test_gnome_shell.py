@@ -439,7 +439,8 @@ def test_extension_logic_under_node():
     """Run the extension's own tests (stubbed GNOME APIs) with node:test."""
     harness = _TESTS / "gnome_extension"
     result = subprocess.run(
-        ["node", "--import", "./register.mjs", "--test", "test_extension.mjs"],
+        ["node", "--import", "./register.mjs", "--test", "--test-reporter=tap",
+         "test_extension.mjs"],
         cwd=harness, capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
