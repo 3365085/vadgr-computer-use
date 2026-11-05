@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -400,7 +401,7 @@ class TestPackagedExtension:
             "CaptureSize": ("", "ii"),
         }
 
-    def test_the_wheel_and_the_profile_wheels_ship_it(self):
+    def test_the_wheel_ships_it(self):
         # A wheel without the files would leave install-deps nothing to install.
         from fnmatch import fnmatch
 
@@ -413,8 +414,15 @@ class TestPackagedExtension:
             relative = (_EXTENSION / name).relative_to(package).as_posix()
             assert any(fnmatch(relative, p) for p in patterns), relative
 
+    @pytest.mark.skipif(
+        sys.version_info < (3, 11),
+        reason="the profile builder imports tomllib, which Python 3.10 lacks; "
+        "it runs on Python 3.12",
+    )
+    def test_the_profile_wheels_ship_it(self):
         import importlib.util
 
+        repo = _TESTS.parent.parent
         spec = importlib.util.spec_from_file_location(
             "build_profile_wheels", repo / "scripts" / "build_profile_wheels.py"
         )
