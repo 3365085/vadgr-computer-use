@@ -208,8 +208,16 @@ def cue_for(
         return Cue(tool, f"Reading {_quoted(app)}" if app else "Reading the window")
     if tool == "ui_act":
         verb = _ACT_VERBS.get(str(args.get("action", "")).lower(), "Acting on")
-        known = memory.get(str(args.get("ref", ""))) if memory is not None else None
+        ref = str(args.get("ref") or "")
+        known = memory.get(ref) if memory is not None and ref else None
         if known is None:
+            # Targeted by name or role instead of a remembered ref: say what
+            # was asked for. Nothing is outlined, since nothing is resolved yet.
+            name, role = args.get("name") or "", args.get("role") or ""
+            if name:
+                return Cue(tool, f"{verb} {_quoted(name)}")
+            if role:
+                return Cue(tool, f"{verb} {role}")
             return Cue(tool, verb if verb != "Acting on" else "Acting")
         name, box = known
         text = f"{verb} {_quoted(name)}" if name else verb

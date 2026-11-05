@@ -124,6 +124,15 @@ class TestStructuredCues:
         untrusted = cue_for("ui_act", {"ref": "atspi:2", "action": "click"}, _double, memory)
         assert (untrusted.x, untrusted.width) == (-1, 0)
 
+    def test_act_by_name_quotes_the_name_it_was_given(self):
+        # ui_act may name its target instead of passing a ref.
+        args = {"ref": "", "action": "click", "name": "Save", "role": "button"}
+        cue = cue_for("ui_act", args, _double, ElementMemory())
+        assert cue.text == 'Clicking "Save"'
+        assert (cue.x, cue.width) == (-1, 0)
+        role_only = {"ref": "", "action": "toggle", "role": "switch"}
+        assert cue_for("ui_act", role_only, _double).text == "Toggling switch"
+
     def test_act_on_an_unknown_ref_still_says_what_it_does(self):
         cue = cue_for("ui_act", {"ref": "atspi:9", "action": "set_text"}, _double, ElementMemory())
         assert cue.text == "Typing into"

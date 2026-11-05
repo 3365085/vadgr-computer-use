@@ -898,7 +898,8 @@ class TestIndicatorCue:
         monkeypatch.setattr(ui_tools, "ui_find",
                             lambda role="", name="", app="": {"ok": True, "elements": [element]})
         monkeypatch.setattr(ui_tools, "ui_act",
-                            lambda ref, action, text="": {"ok": True, "action": action})
+                            lambda ref="", action="", text="", **targets:
+                            {"ok": True, "action": action})
         self._call("ui_find", {"name": "Save"})
         self._call("ui_act", {"ref": "atspi:1", "action": "click"})
         assert shell.calls[0][:2] == ("ui_find", 'Finding "Save"')
