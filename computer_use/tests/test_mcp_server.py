@@ -847,14 +847,21 @@ class TestIndicatorCue:
         import json
 
         shell.stopped = True
+        result = self._call("screenshot", {})
+        (text,) = [c.text for c in result.content]
+        assert json.loads(text)["error"] == "user_stopped"
+        mock_engine.screenshot.assert_not_called()
+
+    def test_a_str_tool_stops_as_plain_text_not_escaped_json(self, shell, mock_engine):
+        shell.stopped = True
         for name, args, action in (
             ("click", {"x": 1, "y": 2}, mock_engine.click),
-            ("screenshot", {}, mock_engine.screenshot),
             ("key_press", {"keys": "enter"}, mock_engine.key_press),
         ):
             result = self._call(name, args)
             (text,) = [c.text for c in result.content]
-            assert json.loads(text)["error"] == "user_stopped", name
+            assert text.startswith("user_stopped: The user pressed Esc"), name
+            assert result.structured_content == {"result": text}, name
             action.assert_not_called()
 
     def test_after_esc_a_structured_tool_returns_the_stop_as_its_dict(

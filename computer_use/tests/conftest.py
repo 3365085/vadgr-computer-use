@@ -107,8 +107,8 @@ def _no_live_gnome_shell(monkeypatch):
 
     A test that runs a cued tool through the MCP wire would otherwise light the
     real GNOME overlay, and an Esc pressed at that desk would fail the test.
-    The default client here never finds the extension; a test that drives the
-    client gives it a fake connection of its own.
+    The default client here never finds the extension, nor is it installed; a
+    test that drives the client gives it a fake connection of its own.
     """
     from computer_use.platform.backends import gnome_shell
 
@@ -118,6 +118,7 @@ def _no_live_gnome_shell(monkeypatch):
     monkeypatch.setattr(
         gnome_shell, "_default_client", gnome_shell.ShellClient(connect=no_bus)
     )
+    monkeypatch.setattr(gnome_shell, "extension_installed", lambda: False)
 
 
 @pytest.fixture(autouse=True)
