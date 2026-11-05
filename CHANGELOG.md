@@ -53,6 +53,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
   method, keeping its windows and controls available through the structured tier.
 - Report an unsupported action, rather than a vanished element, when a live
   Linux control does not expose the native Action interface.
+- Bound the Linux structured tier's state and bounds reads at half a second.
+  Flutter apps such as the Ubuntu App Center leave them unanswered for some
+  nodes, and at the five-second bus timeout one `ui_tree` of such an app took
+  25 seconds and dropped those nodes. After one unanswered read an app is not
+  asked again within the same tool call, and its elements are still returned,
+  with `unknown` naming the `bounds` and `states` that could not be read.
+- Cancel an accessibility-bus call that outlives its timeout instead of leaving
+  it pending, and report every such timeout as one error class, including on
+  Python 3.10, where the loop raises its own timeout classes.
 - Serialize GNOME Wayland portal screenshots across processes. Overlapping
   requests from concurrent computer-use servers waited out their whole timeout
   and failed; each request now takes a per-user turn.

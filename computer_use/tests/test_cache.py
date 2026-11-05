@@ -172,10 +172,12 @@ class _FakeBus:
         self._silent_settext = silent_settext
         self.extents_answer = None
         self.live_calls = 0
+        self.timeouts = []  # (member, per-call timeout) for every call
 
     _HANG = object()  # a call whose reply never arrives; run() raises on it
 
-    def call(self, dest, path, iface, member, signature="", body=None):
+    def call(self, dest, path, iface, member, signature="", body=None, timeout=None):
+        self.timeouts.append((member, timeout))
         if member in self._hang_members and (
             self._hang_dests is None or dest in self._hang_dests
         ):
@@ -271,7 +273,7 @@ class _OptionalRoleNameBus(_FakeBus):
         self.role_error = role_error
         self.methods = []
 
-    def call(self, dest, path, iface, member, signature="", body=None):
+    def call(self, dest, path, iface, member, signature="", body=None, timeout=None):
         self.methods.append(member)
         if dest == "accesskit" and member == "GetRoleName":
             return _Reply(None, error_name=f"org.freedesktop.DBus.Error.{self.name_error}")
@@ -369,15 +371,16 @@ class TestClientServesFromCache:
     def test_extents_timeout_degrades_to_no_bounds_and_trips_the_breaker(self):
         # The Ubuntu App Center's Flutter embedder never answers GetExtents
         # (observed: a dbind timeout from gi.Atspi too, so it is the app, not
-        # the client). One unanswered call must read as "no bounds", and the
-        # app must not be asked again: a per-element five-second stall would
-        # turn one ui_tree of that app into minutes.
+        # the client). One unanswered call must read as unknown bounds, and the
+        # app must not be asked again in the same traversal: a per-element
+        # stall would turn one ui_tree of that app into minutes.
         bus = _FakeBus({}, hang_members={"GetExtents"})
         client = _DbusClient(bus)
         assert client.extents(("snapstore", "/btn")) is None
         calls_after_first = bus.live_calls
         assert client.extents(("snapstore", "/other")) is None
         assert bus.live_calls == calls_after_first  # breaker: no second ask
+        assert client.unknown_fields(("snapstore", "/other")) == ("bounds",)
 
     def test_extents_breaker_is_per_app_not_global(self):
         bus = _FakeBus({}, hang_members={"GetExtents"}, hang_dests={"snapstore"})
@@ -440,17 +443,62 @@ class TestClientServesFromCache:
             landed = False
         assert landed is False
 
-    def test_a_per_node_read_that_never_answers_is_element_gone(self):
-        # After the Ubuntu App Center navigates, its replaced nodes answer
-        # nothing at all (GetState observed hanging; gi.Atspi times out on them
-        # the same way). A node the app will not answer for is exactly an
-        # unreachable node: ElementGone, which every walk already skips, rather
-        # than a raw TimeoutError that kills the whole find.
-        from computer_use.tools.ui.atspi import ElementGone
+    def test_an_unanswered_getstate_reads_as_unknown_not_gone(self):
+        # Flutter's embedder leaves GetState unanswered for live nodes (the
+        # Ubuntu App Center). Reading that as a vanished node dropped the node
+        # and its whole subtree, at five seconds a node; it is an unknown field
+        # instead, and an empty state set already means "presumed showing".
         bus = _FakeBus({}, hang_members={"GetState"})
         client = _DbusClient(bus)
+        assert client.states(("snapstore", "/btn")) == ()
+        assert client.unknown_fields(("snapstore", "/btn")) == ("states",)
+
+    def test_one_stall_skips_both_reads_of_that_app_for_the_traversal(self):
+        bus = _FakeBus({}, hang_members={"GetState"}, hang_dests={"snapstore"})
+        client = _DbusClient(bus)
+        client.begin_traversal()
+        client.states(("snapstore", "/one"))
+        asked = bus.live_calls
+        assert client.extents(("snapstore", "/two")) is None
+        assert client.states(("snapstore", "/two")) == ()
+        assert bus.live_calls == asked  # neither read went to the bus
+        assert client.unknown_fields(("snapstore", "/two")) == ("bounds", "states")
+        # Another application is still read in full.
+        bus.extents_answer = (1, 2, 3, 4)
+        assert client.extents(("gtk", "/btn")) == (1, 2, 3, 4)
+        assert client.unknown_fields(("gtk", "/btn")) == ()
+
+    def test_a_new_traversal_asks_the_stalled_app_again(self):
+        bus = _FakeBus({}, hang_members={"GetExtents"})
+        client = _DbusClient(bus)
+        client.begin_traversal()
+        client.extents(("snapstore", "/btn"))
+        asked = bus.live_calls
+        client.begin_traversal()
+        assert client.unknown_fields(("snapstore", "/btn")) == ()
+        client.extents(("snapstore", "/btn"))
+        assert bus.live_calls == asked + 1
+
+    def test_only_getstate_and_getextents_are_bounded_at_half_a_second(self):
+        bus = _FakeBus({}, live_children={("gtk", "/frame"): [["gtk", "/btn"]]})
+        bus.extents_answer = (0, 0, 10, 10)
+        client = _DbusClient(bus)
+        client.states(("gtk", "/btn"))
+        client.extents(("gtk", "/btn"))
+        client.children(("gtk", "/frame"))
+        timeouts = dict(bus.timeouts)
+        assert timeouts["GetState"] == 0.5
+        assert timeouts["GetExtents"] == 0.5
+        assert timeouts["GetChildren"] is None  # the bus's own, longer bound
+
+    def test_other_per_node_reads_that_never_answer_are_still_element_gone(self):
+        # A node whose children the app will not list is unreachable: the walk
+        # skips it, as before, rather than a raw TimeoutError killing the find.
+        from computer_use.tools.ui.atspi import ElementGone
+        bus = _FakeBus({}, hang_members={"GetChildren"})
+        client = _DbusClient(bus)
         with pytest.raises(ElementGone):
-            client.states(("snapstore", "/stale"))
+            client.children(("snapstore", "/stale"))
 
     def test_unnamed_bulk_actions_fall_back_to_per_index_getname(self):
         # The Ubuntu App Center's Flutter embedder answers GetActions with the
@@ -500,3 +548,197 @@ class TestClientServesFromCache:
         before = bus.live_calls
         assert client.name(("qt", "/btn")) == "8"
         assert bus.live_calls == before  # the other app is still snapshot-served
+
+
+def _state_words(names):
+    from computer_use.tools.ui.atspi import _STATE_NAMES
+
+    low = high = 0
+    for name in names:
+        index = _STATE_NAMES.index(name)
+        if index < 32:
+            low |= 1 << index
+        else:
+            high |= 1 << (index - 32)
+    return [low, high]
+
+
+class _Peer:
+    """The applications' end of the accessibility bus, on the real event loop.
+
+    A (bus name, path, member) in ``hang`` never answers: its coroutine waits
+    forever, the way a stalled Flutter embedder leaves the call pending. Every
+    other call answers at once from ``tree``.
+    """
+
+    def __init__(self, tree, hang=()):
+        self.tree = tree
+        self.hang = set(hang)
+        self.asked = []
+
+    async def call(self, message):
+        import asyncio
+
+        key = (message.destination, message.path)
+        self.asked.append((*key, message.member))
+        if (*key, message.member) in self.hang:
+            await asyncio.Event().wait()
+        member = message.member
+        if member == "GetAddress":
+            return _Reply(["unix:path=/nowhere"])
+        if member == "GetItems":
+            return _Reply(None, error_name="org.freedesktop.DBus.Error.UnknownMethod")
+        node = self.tree.get(key)
+        if node is None:
+            return _Reply(None, error_name="org.freedesktop.DBus.Error.UnknownObject")
+        if member == "GetChildren":
+            return _Reply([[list(child) for child in node.get("children", ())]])
+        if member == "GetRoleName":
+            return _Reply([node["role"]])
+        if member == "Get" and message.body[1] == "Name":
+            return _Reply([_Variant(node.get("name", ""))])
+        if member == "GetState":
+            return _Reply([_state_words(node.get("states", ()))])
+        if member == "GetExtents":
+            return _Reply([list(node.get("extents", (0, 0, 0, 0)))])
+        return _Reply(None, error_name="org.freedesktop.DBus.Error.UnknownMethod")
+
+
+@pytest.mark.skipif(not _HAS_DBUS_FAST, reason="dbus-fast is installed on Linux only")
+class TestStalledReadsOnALiveLoop:
+    """A Flutter app that never answers some reads, through the real bus code.
+
+    Measured on the test machine before the fix: one ui_tree of such an app
+    took 25 seconds, five seconds per unanswered read, and the nodes behind
+    those reads were dropped. The bound is one half-second wait per app per
+    traversal, and every node is still returned.
+    """
+
+    FLUTTER, GTK = ":1.10", ":1.11"
+    STALLED = ("Two", "Four", "Six", "Seven")
+
+    def _backend(self):
+        from computer_use.platform.resolver.session import SessionContext
+        from computer_use.tools.ui.atspi import (
+            _REGISTRY_BUS,
+            _ROOT_PATH,
+            AtspiBackend,
+            _AtspiBus,
+        )
+
+        on = ["showing", "visible", "enabled"]
+        names = ("One", "Two", "Three", "Four", "Five", "Six", "Seven")
+        controls = [(self.FLUTTER, f"/n{i}") for i in range(len(names))]
+        tree = {
+            (_REGISTRY_BUS, _ROOT_PATH): {
+                "role": "desktop frame",
+                "children": [(self.FLUTTER, "/app"), (self.GTK, "/app")],
+            },
+            (self.FLUTTER, "/app"): {"role": "application", "name": "flutter-app",
+                                     "children": [(self.FLUTTER, "/frame")]},
+            (self.FLUTTER, "/frame"): {
+                "role": "frame", "name": "App Center",
+                "states": ["active", *on], "extents": (0, 0, 800, 600),
+                "children": controls,
+            },
+            (self.GTK, "/app"): {"role": "application", "name": "gtk-app",
+                                 "children": [(self.GTK, "/frame")]},
+            (self.GTK, "/frame"): {"role": "frame", "name": "Editor", "states": on,
+                                   "extents": (0, 0, 640, 480),
+                                   "children": [(self.GTK, "/save")]},
+            (self.GTK, "/save"): {"role": "button", "name": "Save", "states": on,
+                                  "extents": (5, 5, 60, 24)},
+        }
+        hang = []
+        for node, name in zip(controls, names):
+            tree[node] = {"role": "button", "name": name, "states": on,
+                          "extents": (10, 10, 50, 20)}
+            if name in self.STALLED:
+                hang += [(*node, "GetState"), (*node, "GetExtents")]
+        peer = _Peer(tree, hang)
+        bus = _AtspiBus(call_timeout=5.0)
+        bus._session = bus._a11y = peer  # connected: no real bus is touched
+        session = SessionContext(server="wayland", compositor="gnome",
+                                 has_uinput=False, libs=frozenset())
+        return AtspiBackend(_DbusClient(bus), session), peer, bus
+
+    def test_a_tree_with_stalled_nodes_returns_in_under_two_seconds(self):
+        import time
+
+        backend, peer, bus = self._backend()
+        try:
+            started = time.monotonic()
+            root = backend.tree(depth=6, app="flutter-app")["root"]
+            elapsed = time.monotonic() - started
+        finally:
+            bus.close()
+        assert elapsed < 2.0, f"ui_tree took {elapsed:.2f}s"
+        children = {child["name"]: child for child in root["children"]}
+        assert list(children) == ["One", "Two", "Three", "Four", "Five", "Six", "Seven"]
+        # Read before the app stalled: in full.
+        assert "showing" in children["One"]["states"]
+        assert "unknown" not in children["One"]
+        # From the first stall on, both fields read as unknown, never as facts.
+        for name in ("Two", "Three", "Seven"):
+            assert children[name]["unknown"] == ["bounds", "states"], name
+            assert children[name]["states"] == [] and children[name]["bounds"] is None
+        # One bounded wait for the app, not one per stalled node.
+        stalled_asks = [a for a in peer.asked if a[2] in ("GetState", "GetExtents")
+                        and a[1] in {"/n1", "/n3", "/n5", "/n6"}]
+        assert len(stalled_asks) == 1
+
+    def test_another_app_in_the_same_read_is_untouched(self):
+        import time
+
+        backend, _peer, bus = self._backend()
+        try:
+            started = time.monotonic()
+            found = backend.find("button", "", app="*")
+            elapsed = time.monotonic() - started
+        finally:
+            bus.close()
+        assert elapsed < 2.0, f"ui_find took {elapsed:.2f}s"
+        by_name = {e.name: e for e in found}
+        assert set(by_name) == {"One", "Two", "Three", "Four", "Five", "Six", "Seven", "Save"}
+        assert "showing" in by_name["Save"].states
+        assert by_name["Save"].unknown == ()
+        assert by_name["Save"].bounds.as_dict() == {"x": 5, "y": 5, "w": 60, "h": 24}
+
+    def test_each_traversal_gives_the_app_one_new_chance(self):
+        backend, peer, bus = self._backend()
+        try:
+            backend.tree(depth=6, app="flutter-app")
+            backend.tree(depth=6, app="flutter-app")
+        finally:
+            bus.close()
+        first_stall = [a for a in peer.asked if a[1] == "/n1" and a[2] == "GetState"]
+        assert len(first_stall) == 2
+
+
+@pytest.mark.skipif(not _HAS_DBUS_FAST, reason="dbus-fast is installed on Linux only")
+class TestBusTimeouts:
+    def test_a_call_that_outlives_the_bus_timeout_is_cancelled_not_leaked(self):
+        # The caller gets the builtin TimeoutError on every Python version
+        # (3.10 raises separate classes from the loop's future), and the
+        # pending call on the loop is cancelled rather than left waiting.
+        import asyncio
+        import threading
+
+        from computer_use.tools.ui.atspi import _AtspiBus
+
+        bus = _AtspiBus(call_timeout=0.05)
+        cancelled = threading.Event()
+
+        async def never_answers():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        try:
+            with pytest.raises(TimeoutError):
+                bus.run(never_answers())
+            assert cancelled.wait(1.0)
+        finally:
+            bus.close()
