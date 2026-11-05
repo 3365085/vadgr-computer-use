@@ -100,8 +100,28 @@ def _cap_portal(ctx):
     return linux.PortalScreenshotCapture()
 
 
+def _cap_gnome_shell(ctx):
+    from computer_use.platform.backends.gnome_shell import GnomeShellScreenCapture
+
+    return GnomeShellScreenCapture()
+
+
+def _gnome_shell_available() -> bool:
+    from computer_use.platform.backends.gnome_shell import extension_available
+
+    return extension_available()
+
+
 CAPTURE_PROVIDERS = [
     _Provider("mss", 90, lambda c: c.server == "x11", _cap_mss),
+    # The vadgr shell extension: no flash, and the indicator is kept out of the
+    # image. Ahead of the CLI tools because on GNOME it is the only capture
+    # path without the portal's flash; absent, GNOME falls through to them.
+    _Provider(
+        "gnome-shell-extension", 65,
+        lambda c: c.server == "wayland" and c.compositor == "gnome" and _gnome_shell_available(),
+        _cap_gnome_shell,
+    ),
     _Provider("grim", 60, lambda c: c.server == "wayland" and _which("grim"), _cap_grim),
     _Provider(
         "gnome-screenshot", 50,

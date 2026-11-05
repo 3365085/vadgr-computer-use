@@ -139,9 +139,11 @@ class ComputerUseEngine:
         return self._platform
 
     def get_platform_info(self) -> dict:
-        """Return platform info, including the structured tier's capability."""
+        """Return platform info, including the capture path and the structured tier."""
+        capture = getattr(self._capture, "backend_name", None)
         return {
             "platform": self._platform.value,
             "backend_available": self._backend.is_available(),
+            "capture": capture if isinstance(capture, str) else type(self._capture).__name__,
             "structured": self._backend.structured_capability(),
         }

@@ -102,6 +102,25 @@ def schema_six_profile():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_gnome_shell(monkeypatch):
+    """Keep the indicator and the shell capture off a developer's live session.
+
+    A test that runs a cued tool through the MCP wire would otherwise light the
+    real GNOME overlay, and an Esc pressed at that desk would fail the test.
+    The default client here never finds the extension; a test that drives the
+    client gives it a fake connection of its own.
+    """
+    from computer_use.platform.backends import gnome_shell
+
+    def no_bus():
+        raise gnome_shell.ExtensionUnavailable("unit tests never reach the live shell")
+
+    monkeypatch.setattr(
+        gnome_shell, "_default_client", gnome_shell.ShellClient(connect=no_bus)
+    )
+
+
+@pytest.fixture(autouse=True)
 def _block_real_session_bus():
     """Stop a test from opening the real session bus.
 

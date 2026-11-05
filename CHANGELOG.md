@@ -11,12 +11,26 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Require authenticated final helper identities for managed installations and
   verify exact signed helper adoption offline for standalone clients.
 - Publish retained profile artifacts without rebuilding their validated bytes.
+- Add a GNOME Shell extension for GNOME 50, installed per user by
+  `vadgr-cua install-deps`. While a native UI tool, a pixel tool or `app_open`
+  runs, an orange glow lights every monitor edge, a pill at the top names the
+  action, and a click-type action first shows a ring at its target, or a box
+  around a control whose screen bounds are trusted. Esc stops vadgr: for 30
+  seconds every desktop tool returns `user_stopped` instead of acting, and the
+  key does not reach the application. The server instructions tell the model to
+  stop and wait for the user when it sees `user_stopped`.
+- Take GNOME Wayland screenshots through that extension, without the flash the
+  screenshot portal always shows and without the overlay in the image. Capture
+  falls back to the portal when the extension is not running, and
+  `get_platform_info` names the capture path.
 
 ### Changed
 
 - Return dict tool results as compact JSON. MCP clients hand the text to the
   model unchanged, and the indent=2 layout was about 40% of the tokens of a
-  structured read such as `ui_tree`, `ui_windows` or `browser`.
+  structured read such as `ui_tree`, `ui_windows` or `browser`. A tool whose
+  declared output schema is an object, such as `type_text`, keeps its dict,
+  because the MCP SDK validates that result against the schema.
 - Lead the server instructions with the structured tiers and keep screenshots as
   the fallback. The previous instructions required a screenshot before and after
   every click, which contradicted the tier order the tools are built around.

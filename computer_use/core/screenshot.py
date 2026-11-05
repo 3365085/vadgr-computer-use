@@ -22,6 +22,11 @@ from computer_use.core.types import Region, ScreenState
 class ScreenCapture(ABC):
     """Abstract base for capturing screenshots."""
 
+    @property
+    def backend_name(self) -> str:
+        """A short name for the capture path, reported by get_platform_info."""
+        return type(self).__name__
+
     @abstractmethod
     def capture_full(self) -> ScreenState:
         """Capture the entire screen. Returns PNG bytes in a ScreenState."""

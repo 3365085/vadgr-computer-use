@@ -87,6 +87,13 @@ include-package-data = false
 # The udev rule `vadgr-cua install-deps` installs so /dev/uinput is writable by
 # the 'input' group (the pure-python uinput fallback needs this).
 "computer_use.setup" = ["udev/*.rules"]
+# The GNOME Shell extension `vadgr-cua install-deps` installs per user: the
+# on-screen indicator, Esc to stop, and screenshots without the portal flash.
+"computer_use.platform" = [
+    "gnome_extension/*/metadata.json",
+    "gnome_extension/*/extension.js",
+    "gnome_extension/*/stylesheet.css",
+]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["*.exe", "*.dll", "*.pyd", "*.zip", "*.ps1"]

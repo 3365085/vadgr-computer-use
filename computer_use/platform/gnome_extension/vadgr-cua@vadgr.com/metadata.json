@@ -1,0 +1,7 @@
+{
+  "uuid": "vadgr-cua@vadgr.com",
+  "name": "vadgr computer use",
+  "description": "Shows when vadgr-cua drives the desktop, stops it when Esc is pressed, and takes its screenshots without the screen flash.",
+  "shell-version": ["50"],
+  "url": "https://github.com/MONTBRAIN/vadgr-computer-use"
+}

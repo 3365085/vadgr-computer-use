@@ -768,3 +768,145 @@ class TestServerInstructions:
         assert text.index("`browser`") < text.index("`ui_find`") < text.index(
             "take a screenshot"
         )
+
+    def test_user_stopped_is_part_of_the_instructions(self):
+        from computer_use import mcp_server
+
+        assert "`user_stopped`" in mcp_server.mcp.instructions
+
+
+class TestStructuredResultsKeepTheirDict:
+    """A tool with an output schema must hand the SDK a dict, not JSON text.
+
+    The SDK validates such a result against the schema, so compacting it into
+    a string failed every type_text call on the wire.
+    """
+
+    def test_type_text_over_the_wire(self):
+        from computer_use import mcp_server
+
+        result = asyncio.run(mcp_server.mcp.call_tool("type_text", {"text": "hi"}))
+        assert result.is_error is False
+        assert result.structured_content["human"] is False
+        assert result.structured_content["units"] == 2
+
+
+class _FakeShell:
+    """Stands in for the GNOME Shell client: records each cue, in order."""
+
+    def __init__(self, log):
+        self.log = log
+        self.calls = []
+        self.stopped = False
+        self.raises = None
+
+    def begin(self, tool, text, x=-1, y=-1, width=0, height=0, own_escape=False):
+        self.log.append("cue")
+        self.calls.append((tool, text, x, y, width, height, own_escape))
+        if self.raises is not None:
+            raise self.raises
+        return self.stopped
+
+
+class TestIndicatorCue:
+    """Every desktop tool tells the indicator before it acts, and obeys Esc."""
+
+    @pytest.fixture
+    def log(self):
+        return []
+
+    @pytest.fixture
+    def shell(self, monkeypatch, log):
+        import computer_use.mcp_server as mod
+        from computer_use.indicator import ElementMemory
+
+        fake = _FakeShell(log)
+        monkeypatch.setattr(mod, "default_client", lambda: fake)
+        monkeypatch.setattr(mod, "_ELEMENTS", ElementMemory())
+        return fake
+
+    @staticmethod
+    def _call(name, args):
+        from computer_use import mcp_server
+
+        return asyncio.run(mcp_server.mcp.call_tool(name, args))
+
+    def test_a_click_is_cued_at_its_screen_point_before_it_fires(
+        self, shell, log, mock_engine
+    ):
+        import computer_use.mcp_server as mod
+
+        mod._scale_x = mod._scale_y = 2.0
+        mock_engine.click.side_effect = lambda *a: log.append("click")
+        self._call("click", {"x": 10, "y": 20})
+        assert shell.calls == [("click", "Clicking", 20, 40, 0, 0, False)]
+        assert log == ["cue", "click"]
+        mock_engine.click.assert_called_once_with(20, 40)
+
+    def test_after_esc_a_tool_does_not_run(self, shell, mock_engine):
+        import json
+
+        shell.stopped = True
+        for name, args, action in (
+            ("click", {"x": 1, "y": 2}, mock_engine.click),
+            ("screenshot", {}, mock_engine.screenshot),
+            ("key_press", {"keys": "enter"}, mock_engine.key_press),
+        ):
+            result = self._call(name, args)
+            (text,) = [c.text for c in result.content]
+            assert json.loads(text)["error"] == "user_stopped", name
+            action.assert_not_called()
+
+    def test_after_esc_a_structured_tool_returns_the_stop_as_its_dict(
+        self, shell, mock_engine
+    ):
+        shell.stopped = True
+        result = self._call("type_text", {"text": "hi"})
+        assert result.structured_content["error"] == "user_stopped"
+        mock_engine.type_text.assert_not_called()
+
+    def test_a_capture_refused_after_esc_is_user_stopped_too(self, shell, mock_engine):
+        import json
+
+        from computer_use.platform.backends.gnome_shell import UserStopped
+
+        mock_engine.screenshot.side_effect = UserStopped("user_stopped: Esc")
+        result = self._call("screenshot", {})
+        (text,) = [c.text for c in result.content]
+        assert json.loads(text)["error"] == "user_stopped"
+
+    def test_vadgrs_own_escape_is_announced(self, shell):
+        self._call("key_press", {"keys": "escape"})
+        assert shell.calls[-1][-1] is True
+
+    def test_tools_that_do_not_touch_the_desktop_are_not_cued(self, shell):
+        self._call("time", {"op": "sleep", "seconds": 0})
+        self._call("get_screen_size", {})
+        assert shell.calls == []
+
+    def test_a_broken_indicator_never_breaks_a_tool(self, shell, mock_engine):
+        shell.raises = RuntimeError("bus went away")
+        result = self._call("click", {"x": 3, "y": 4})
+        assert result.is_error is False
+        mock_engine.click.assert_called_once()
+
+    def test_ui_act_names_what_ui_find_returned(self, shell, monkeypatch):
+        from computer_use.tools.ui import tools as ui_tools
+
+        element = {"ref": "atspi:1", "role": "button", "name": "Save",
+                   "bounds": None, "states": ["showing"]}
+        monkeypatch.setattr(ui_tools, "ui_find",
+                            lambda role="", name="", app="": {"ok": True, "elements": [element]})
+        monkeypatch.setattr(ui_tools, "ui_act",
+                            lambda ref="", action="", text="", **targets:
+                            {"ok": True, "action": action})
+        self._call("ui_find", {"name": "Save"})
+        self._call("ui_act", {"ref": "atspi:1", "action": "click"})
+        assert shell.calls[0][:2] == ("ui_find", 'Finding "Save"')
+        assert shell.calls[1][:2] == ("ui_act", 'Clicking "Save"')
+
+    def test_a_direct_python_call_is_not_cued(self, shell, mock_engine):
+        from computer_use import mcp_server
+
+        mcp_server.click(1, 2)
+        assert shell.calls == []

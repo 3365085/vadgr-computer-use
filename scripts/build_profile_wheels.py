@@ -247,6 +247,8 @@ def source_files(repository: Path) -> dict[str, bytes]:
             or "typing_profiles/" in relative
             and path.suffix == ".json"
             or relative.endswith(".rules")
+            or "/gnome_extension/" in relative
+            and path.suffix in {".js", ".json", ".css"}
         ):
             files[relative] = path.read_bytes()
     return files

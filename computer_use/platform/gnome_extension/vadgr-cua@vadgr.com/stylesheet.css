@@ -1,0 +1,46 @@
+/* The vadgr-cua overlay: an orange glow on every monitor edge, a status pill,
+ * and the click ring and target box drawn before an action. */
+
+.vadgr-cua-edge-top {
+  background-gradient-direction: vertical;
+  background-gradient-start: rgba(255, 128, 0, 0.85);
+  background-gradient-end: rgba(255, 128, 0, 0);
+}
+
+.vadgr-cua-edge-bottom {
+  background-gradient-direction: vertical;
+  background-gradient-start: rgba(255, 128, 0, 0);
+  background-gradient-end: rgba(255, 128, 0, 0.85);
+}
+
+.vadgr-cua-edge-left {
+  background-gradient-direction: horizontal;
+  background-gradient-start: rgba(255, 128, 0, 0.85);
+  background-gradient-end: rgba(255, 128, 0, 0);
+}
+
+.vadgr-cua-edge-right {
+  background-gradient-direction: horizontal;
+  background-gradient-start: rgba(255, 128, 0, 0);
+  background-gradient-end: rgba(255, 128, 0, 0.85);
+}
+
+.vadgr-cua-pill {
+  background-color: rgba(28, 28, 28, 0.92);
+  color: #ffffff;
+  border: 1px solid rgba(255, 128, 0, 0.9);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-weight: bold;
+}
+
+.vadgr-cua-ring {
+  border: 3px solid rgba(255, 128, 0, 0.95);
+  border-radius: 24px;
+}
+
+.vadgr-cua-target {
+  border: 2px solid rgba(255, 128, 0, 0.95);
+  border-radius: 6px;
+  background-color: rgba(255, 128, 0, 0.12);
+}

@@ -79,43 +79,112 @@ from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from PIL import Image as PILImage
 
+from computer_use import indicator as _indicator
 from computer_use.core import REGISTRY, Risk, Tier, tool
+from computer_use.platform.backends.gnome_shell import UserStopped, default_client
 from computer_use.platform.detect import detect_platform
 
 
 class _CompactMCPServer(MCPServer):
-    """An MCPServer whose dict results reach the client as compact JSON.
+    """The MCPServer every tool is registered on: compact results, and the cue.
 
-    MCPServer serializes a dict result with indent=2, the client hands that text
-    to the model as is, and the indentation is about 40% of the tokens of a
-    ui_tree, ui_windows or browser read. Only a dict result is converted, before
-    the SDK sees it, with the same serializer minus the indent: str, Image and
-    list results keep their own conversion, and a direct Python call of a tool
-    still returns the dict.
+    Compact: MCPServer serializes a dict result with indent=2, the client hands
+    that text to the model as is, and the indentation is about 40% of the tokens
+    of a ui_tree, ui_windows or browser read. A dict result is converted before
+    the SDK sees it, with the same serializer minus the indent. str, Image and
+    list results keep their own conversion. A tool whose return annotation makes
+    the SDK validate an object schema (type_text) keeps its dict, because a
+    string fails that validation. A direct Python call still returns the dict.
+
+    Cue: this wrapper is the one place every tool call passes through, so it is
+    where a desktop tool tells the on-screen indicator what it is about to do
+    (see ``computer_use/indicator.py``). When the user has pressed Esc, a cued
+    tool does not run and returns ``user_stopped`` instead.
     """
 
     def tool(self, *args, **kwargs):
         register = super().tool(*args, **kwargs)
 
         def decorator(fn):
+            name = kwargs.get("name") or fn.__name__
+            keeps_dict = _validates_an_object(fn, kwargs.get("structured_output"))
+            cued = name in _indicator.INDICATED_TOOLS
+            signature = inspect.signature(fn)
+
+            def deliver(result):
+                if cued:
+                    _ELEMENTS.observe(name, result)
+                return result if keeps_dict else _compact(result)
+
             if inspect.iscoroutinefunction(fn):
                 @functools.wraps(fn)
                 async def wire(*a, **kw):
-                    return _compact(await fn(*a, **kw))
+                    if cued and await anyio.to_thread.run_sync(
+                        _cue, name, signature, a, kw
+                    ):
+                        return deliver(_indicator.stopped_result())
+                    try:
+                        return deliver(await fn(*a, **kw))
+                    except UserStopped:
+                        return deliver(_indicator.stopped_result())
             else:
                 @functools.wraps(fn)
                 def wire(*a, **kw):
-                    return _compact(fn(*a, **kw))
+                    if cued and _cue(name, signature, a, kw):
+                        return deliver(_indicator.stopped_result())
+                    try:
+                        return deliver(fn(*a, **kw))
+                    except UserStopped:
+                        return deliver(_indicator.stopped_result())
             register(wire)
             return fn
 
         return decorator
 
 
+def _validates_an_object(fn, structured_output) -> bool:
+    """Whether the SDK validates this tool's result against an object schema.
+
+    True for a dict-typed return such as type_text's. A str return is also
+    validated, but wrapped as {"result": str}, so a dict for it must still be
+    compacted into a string; and a bare dict or no annotation is not validated.
+    """
+    try:
+        from mcp.server.mcpserver.tools import Tool as SdkTool
+
+        meta = SdkTool.from_function(fn, structured_output=structured_output).fn_metadata
+        return meta.output_schema is not None and not getattr(meta, "wrap_output", False)
+    except Exception:
+        return False
+
+
 def _compact(result):
     if isinstance(result, dict):
         return pydantic_core.to_json(result, fallback=str).decode()
     return result
+
+
+# Names and trusted bounds from recent ui_* reads, so a ui_act cue can say
+# what it is about to act on.
+_ELEMENTS = _indicator.ElementMemory()
+
+
+def _cue(name: str, signature: inspect.Signature, args: tuple, kwargs: dict) -> bool:
+    """Tell the indicator what the tool is about to do. True: the user stopped it.
+
+    Never raises. The indicator is for the person at the screen, and a tool
+    must not fail because it could not be drawn.
+    """
+    try:
+        bound = signature.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+        cue = _indicator.cue_for(name, bound.arguments, _to_real, _ELEMENTS)
+        return default_client().begin(
+            cue.tool, cue.text, cue.x, cue.y, cue.width, cue.height, cue.own_escape
+        )
+    except Exception as exc:
+        logger.debug("indicator cue skipped for %s: %s", name, exc)
+        return False
 
 
 mcp = _CompactMCPServer(
@@ -141,7 +210,10 @@ mcp = _CompactMCPServer(
         "games, an empty tree, a visual judgment): take a screenshot, use "
         "coordinates from the latest screenshot only, and take another only "
         "when the result cannot be read back. format=\"thumbnail\" is enough "
-        "for a sanity check."
+        "for a sanity check.\n\n"
+        "If a desktop tool returns error `user_stopped`, the person at the "
+        "screen pressed Esc: stop calling desktop tools and wait for their "
+        "next instruction."
     ),
 )
 
@@ -1202,7 +1274,8 @@ def _cmd_browser_setup(args) -> int:
 
 
 def _cmd_install_deps(args) -> int:
-    """Provision the system deps pip can't (wl-clipboard, /dev/uinput udev rule).
+    """Provision what pip can't: system packages, the uinput udev rule, and on
+    GNOME the shell extension (indicator, Esc to stop, no screenshot flash).
 
     Prints a distro-aware plan by default; executes it with --yes.
     """
@@ -1284,7 +1357,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     deps_parser = sub.add_parser(
         "install-deps",
-        help="Provision system deps pip can't (wl-clipboard, /dev/uinput udev rule)",
+        help=(
+            "Provision what pip can't (wl-clipboard, /dev/uinput udev rule, "
+            "the GNOME Shell extension)"
+        ),
     )
     deps_parser.add_argument(
         "--yes",
