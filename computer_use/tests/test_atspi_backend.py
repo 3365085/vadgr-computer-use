@@ -856,6 +856,17 @@ class TestReadAnyWindow:
         names = {e.name for e in backend.find("", "", app="*")}
         assert {"7", "Save"} <= names
 
+    def test_a_window_title_finds_an_app_whose_name_differs(self):
+        # FlClash's accessible app name is its process, com.follow.clash; the
+        # name a person and the model know it by is the window title.
+        tree = _multi_app_tree()
+        tree[("a1", "/a1")] = FakeNode("application", "com.follow.clash", pid=100,
+                                       children=[("f1", "/f1")])
+        tree[("f1", "/f1")] = FakeNode("frame", "FlClash", states=["showing", "visible"],
+                                       children=[("b7", "/b7")])
+        backend = _backend(tree)
+        assert [e.name for e in backend.find("button", "7", app="flclash")] == ["7"]
+
     def test_unknown_app_is_no_tree(self):
         backend = _backend(_multi_app_tree())
         with pytest.raises(StructuredError) as exc:
