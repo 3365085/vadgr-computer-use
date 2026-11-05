@@ -38,6 +38,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
   25 seconds and dropped those nodes. After one unanswered read an app is not
   asked again within the same tool call, and its elements are still returned,
   with `unknown` naming the `bounds` and `states` that could not be read.
+- Never ask a Flutter app for element bounds on Linux. Flutter's embedder
+  answers that read by calling itself over D-Bus and blocks the whole app until
+  the 25 second bus timeout, so even one bounded read froze it for the rest of
+  the call. A Flutter app is recognised by its process and read in well under a
+  second, with `unknown` naming `bounds` on its elements; names, states and
+  actions are read as usual.
 - Cancel an accessibility-bus call that outlives its timeout instead of leaving
   it pending, and report every such timeout as one error class, including on
   Python 3.10, where the loop raises its own timeout classes.
