@@ -331,15 +331,17 @@ def _downscale(
     img = PILImage.open(io.BytesIO(png_bytes))
     real_w, real_h = img.size
 
-    if fmt == "thumbnail":
-        target_w = min(_THUMBNAIL_WIDTH, real_w)
-    else:
-        configured = _MAX_WIDTH if _MAX_WIDTH > 0 else real_w
-        target_w = min(configured, _MAX_DIMENSION_CEILING, real_w)
+    configured = _MAX_WIDTH if _MAX_WIDTH > 0 else real_w
+    coord_w = min(configured, _MAX_DIMENSION_CEILING, real_w)
+    coord_h = int(real_h * coord_w / real_w)
+    # A thumbnail is the same screen in fewer pixels, so it keeps the coordinate
+    # space of the full format, as the screenshot docstring promises. Taking the
+    # thumbnail's own width made a following click or region four times off.
+    _scale_x, _scale_y = real_w / coord_w, real_h / coord_h
+    _display_w, _display_h = coord_w, coord_h
+    target_w = min(_THUMBNAIL_WIDTH, real_w) if fmt == "thumbnail" else coord_w
 
     if target_w >= real_w:
-        _scale_x, _scale_y = 1.0, 1.0
-        _display_w, _display_h = real_w, real_h
         data, image_format = _encode_image(img, fmt)
         logger.debug(
             "No resize (%dx%d), encoded as %s, %d bytes",
@@ -350,13 +352,8 @@ def _downscale(
         )
         return data, image_format
 
-    ratio = target_w / real_w
     new_w = target_w
-    new_h = int(real_h * ratio)
-
-    _scale_x = real_w / new_w
-    _scale_y = real_h / new_h
-    _display_w, _display_h = new_w, new_h
+    new_h = int(real_h * target_w / real_w)
 
     img = img.resize((new_w, new_h), PILImage.LANCZOS)
     data, image_format = _encode_image(img, fmt)

@@ -521,8 +521,10 @@ class AtspiBackend:
 
         ``app=""`` is the active window (unchanged default). ``app="*"`` is every
         open window. Otherwise it is the windows of the applications whose name
-        matches, and a name that matches nothing is ``no_tree`` (naming it), not
-        an empty success that reads as "found nothing on screen".
+        matches or, when none does, the windows whose title matches (FlClash's
+        process, and so its accessible name, is com.follow.clash). A name that
+        matches nothing is ``no_tree`` (naming it), not an empty success that
+        reads as "found nothing on screen".
         """
         if app == "":
             frames = [self._active_window()]
@@ -536,6 +538,15 @@ class AtspiBackend:
                         frames.extend(self._frames_of(a))
                 except ElementGone:
                     continue
+            if not frames:
+                for a in self._apps():
+                    try:
+                        frames.extend(
+                            f for f in self._frames_of(a)
+                            if app.lower() in self._client.name(f).lower()
+                        )
+                    except ElementGone:
+                        continue
             if not frames:
                 raise StructuredError(NO_TREE, f"no open window for app {app!r}")
         self._client.warm_caches([f[0] for f in frames])

@@ -44,6 +44,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Fixed
 
+- Keep the coordinate space of a full screenshot after a `thumbnail` one, as
+  the screenshot documentation states. A click or region taken after a
+  thumbnail was scaled for the 640-pixel image and landed several times off.
+- Let `ui_find`, `ui_tree` and the other `app=` reads match a window title when
+  no application name matches, for apps whose accessible name is their process
+  (FlClash is `com.follow.clash`).
 - Show "button" as the `ui_find` role example. Current toolkits report that name,
   so a search that followed the old "push button" example matched nothing and
   the agent fell back to a whole-window `ui_tree`.

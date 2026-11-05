@@ -542,7 +542,20 @@ class TestImageEncoding:
         result = screenshot(format="thumbnail")
         assert self._decode_format(result.data) == "jpeg"
         # Thumbnail caps at _THUMBNAIL_WIDTH (640px) regardless of _MAX_WIDTH.
-        assert mod._display_w == mod._THUMBNAIL_WIDTH
+        assert PILImage.open(io.BytesIO(result.data)).width == mod._THUMBNAIL_WIDTH
+
+    def test_a_thumbnail_keeps_the_coordinate_space_of_the_full_format(self, mock_engine):
+        # Seen live: a region asked right after a thumbnail, in the 1366-wide
+        # space the docstring promises, landed four times off and off screen.
+        import computer_use.mcp_server as mod
+        from computer_use.mcp_server import click, screenshot
+
+        screenshot(format="jpeg")
+        full = (mod._scale_x, mod._scale_y, mod._display_w, mod._display_h)
+        screenshot(format="thumbnail")
+        assert (mod._scale_x, mod._scale_y, mod._display_w, mod._display_h) == full
+        click(512, 288)
+        mock_engine.click.assert_called_once_with(960, 540)
 
     def test_screenshot_thumbnail_is_smaller_than_jpeg(self, mock_engine):
         from computer_use.mcp_server import screenshot
